@@ -6,16 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "GitHub layer for singlelane: App auth, the GitHub trait, octocrab implementation and an in-memory fake"
+description = "GitHub layer for singlelane: App auth, the GitHub trait, REST implementation and an in-memory fake"
 
 [dependencies]
 singlelane-core.workspace = true
 async-trait.workspace = true
 base64.workspace = true
-http.workspace = true
 jiff.workspace = true
-octocrab.workspace = true
+reqwest.workspace = true
 ring.workspace = true
+rustls.workspace = true
 rustls-pki-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true

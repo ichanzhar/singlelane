@@ -1,4 +1,4 @@
-//! Data types of the GitHub layer, independent of octocrab and of the JSON wire format.
+//! Data types of the GitHub layer, independent of the HTTP client and of the JSON wire format.
 
 use std::collections::BTreeMap;
 

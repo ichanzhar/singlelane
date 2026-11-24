@@ -9,7 +9,7 @@ use singlelane_core::config::Config;
 use singlelane_core::policy::redact::Redactor;
 use singlelane_core::schedule::Clock;
 use singlelane_github::http::{GITHUB_API, Http, RetryPolicy};
-use singlelane_github::{AppAuth, AppKey, OctoGitHub};
+use singlelane_github::{AppAuth, AppKey, RestGitHub};
 
 /// The system clock.
 #[derive(Debug, Clone, Copy, Default)]
@@ -25,7 +25,7 @@ impl Clock for SystemClock {
 #[derive(Debug)]
 pub struct Client {
     /// The REST client.
-    pub gh: OctoGitHub,
+    pub gh: RestGitHub,
     /// Installation tokens (also used by `doctor`).
     pub auth: Arc<AppAuth>,
 }
@@ -55,6 +55,6 @@ pub fn connect_with_key(config: &Config, key: AppKey) -> Result<Client> {
         http.clone(),
         clock,
     ));
-    let gh = OctoGitHub::new(http, Arc::clone(&auth), Redactor::new());
+    let gh = RestGitHub::new(http, Arc::clone(&auth), Redactor::new());
     Ok(Client { gh, auth })
 }

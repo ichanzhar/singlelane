@@ -12,7 +12,7 @@ use crate::types::{
     NewPullRequest, PullRequest, Review, ReviewComment,
 };
 
-/// GitHub operations used by the factory. Implemented by [`crate::OctoGitHub`] (real API) and
+/// GitHub operations used by the factory. Implemented by [`crate::RestGitHub`] (real API) and
 /// [`crate::FakeGitHub`] (in memory, for tests).
 #[async_trait]
 pub trait GitHub: Send + Sync {
@@ -127,7 +127,7 @@ mod tests {
     fn g3_github_layer_has_no_merge_or_approve() {
         let sources = [
             ("api.rs", include_str!("api.rs")),
-            ("octo.rs", include_str!("octo.rs")),
+            ("rest.rs", include_str!("rest.rs")),
             ("fake.rs", include_str!("fake.rs")),
         ];
         // Assembled at runtime so the test itself doesn't match.

@@ -1,25 +1,31 @@
-//! HTTP transport on top of octocrab: authentication header per request, retries with
-//! backoff, `Retry-After`, request-id logging and `Link` pagination.
+//! HTTP transport for the GitHub REST API on reqwest (rustls with the ring provider):
+//! authentication header per request, API version pinning, retries with backoff,
+//! `Retry-After`, request-id logging and `Link` pagination.
 //!
-//! octocrab is built without its own auth and retry layers. singlelane manages tokens itself
-//! (it needs the raw installation token for git and `gh` too). octocrab's retry layer retries
-//! 5xx immediately for every method, POST included (a comment or PR could be created twice),
-//! never caps a rate-limit wait, and can't take a test clock; this one backs off, retries a
-//! failed POST only on rate limits, and gives up on waits longer than [`RetryPolicy::max_delay`].
+//! singlelane manages tokens itself (it needs the raw installation token for git and `gh`
+//! too), so only a plain HTTP client is needed. Retries back off, retry a failed POST only on
+//! rate limits (a POST that failed with 5xx may have been applied), and give up on waits longer
+//! than [`RetryPolicy::max_delay`].
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use http::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
-use http::{Method, Uri};
-use octocrab::Octocrab;
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
+use reqwest::{Method, Url};
 
 use crate::error::{GithubError, Result, clean_message};
 use crate::secret::Secret;
 
 /// The public GitHub API.
 pub const GITHUB_API: &str = "https://api.github.com";
+
+/// The REST API version sent with every request (`X-GitHub-Api-Version`). The latest version
+/// GitHub lists; see SPEC 5.1 before changing it.
+pub const API_VERSION: &str = "2026-03-10";
+
+/// `User-Agent` (GitHub rejects requests without one).
+const USER_AGENT: &str = concat!("singlelane/", env!("CARGO_PKG_VERSION"));
 
 /// Retry behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,8 +97,8 @@ impl Response {
 /// The HTTP client. Cheap to clone.
 #[derive(Clone)]
 pub struct Http {
-    octo: Octocrab,
-    base: Uri,
+    client: reqwest::Client,
+    base: Url,
     retry: RetryPolicy,
     sleeper: Arc<dyn Sleeper>,
     clock: Arc<dyn singlelane_core::schedule::Clock>,
@@ -108,8 +114,7 @@ impl std::fmt::Debug for Http {
 }
 
 impl Http {
-    /// A client for `base_url` (normally [`GITHUB_API`]; a mock server in tests). Must be
-    /// called inside a tokio runtime.
+    /// A client for `base_url` (normally [`GITHUB_API`]; a mock server in tests).
     pub fn new(
         base_url: &str,
         retry: RetryPolicy,
@@ -120,23 +125,36 @@ impl Http {
             path: base_url.to_string(),
             message: m,
         };
-        let base: Uri = base_url
-            .trim_end_matches('/')
-            .parse()
-            .map_err(|e: http::uri::InvalidUri| invalid(e.to_string()))?;
-        if base.scheme().is_none() || base.authority().is_none() {
-            return Err(invalid("base URL needs a scheme and a host".into()));
+        let base = Url::parse(base_url.trim_end_matches('/'))
+            .map_err(|e| invalid(format!("invalid base URL: {e}")))?;
+        if !matches!(base.scheme(), "https" | "http") || base.host_str().is_none() {
+            return Err(invalid(
+                "base URL needs an http(s) scheme and a host".into(),
+            ));
         }
-        let octo = Octocrab::builder()
-            .base_uri(base.clone())
-            .map_err(|e| invalid(clean_message(&e.to_string())))?
-            .set_connect_timeout(Some(Duration::from_secs(15)))
-            .set_read_timeout(Some(Duration::from_secs(60)))
-            .set_write_timeout(Some(Duration::from_secs(60)))
+        // rustls with ring (no aws-lc). reqwest takes the process-wide default provider; an
+        // error only means one is already installed.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/vnd.github+json"),
+        );
+        headers.insert(
+            "x-github-api-version",
+            HeaderValue::from_static(API_VERSION),
+        );
+        let client = reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .default_headers(headers)
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(60))
+            // reqwest drops `Authorization` when a redirect leaves the host.
+            .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .map_err(|e| invalid(clean_message(&e.to_string())))?;
         Ok(Self {
-            octo,
+            client,
             base,
             retry,
             sleeper: Arc::new(TokioSleeper),
@@ -160,11 +178,11 @@ impl Http {
         auth: &Secret,
         body: Option<&serde_json::Value>,
     ) -> Result<Response> {
-        let (uri, path) = self.resolve(&method, target)?;
+        let (url, path) = self.resolve(&method, target)?;
         let mut attempt = 1u32;
         loop {
             let outcome = self
-                .send_once(&method, &uri, &path, auth, body, attempt)
+                .send_once(&method, &url, &path, auth, body, attempt)
                 .await;
             let delay = match &outcome {
                 Ok(Attempt::Done(_)) => None,
@@ -196,31 +214,40 @@ impl Http {
     }
 
     /// Resolves `target` against the base URL. Absolute URLs must point at the base host, so
-    /// a pagination link can never send the token anywhere else.
-    fn resolve(&self, method: &Method, target: &str) -> Result<(Uri, String)> {
+    /// a pagination link can never send the token anywhere else. Returns the URL and the path
+    /// with query, for logs and errors.
+    fn resolve(&self, method: &Method, target: &str) -> Result<(Url, String)> {
         let refuse = |m: &str| GithubError::Refused(format!("{method} {target}: {m}"));
-        if target.starts_with('/') {
-            let uri: Uri = target.parse().map_err(|_| refuse("not a valid path"))?;
-            let path = uri.path_and_query().map_or("/", |p| p.as_str()).to_string();
-            return Ok((uri, path));
-        }
-        let uri: Uri = target.parse().map_err(|_| refuse("not a valid URL"))?;
-        if uri.scheme() != self.base.scheme() || uri.authority() != self.base.authority() {
-            return Err(refuse("URL is not on the GitHub API host"));
-        }
-        let path = uri.path_and_query().map_or("/", |p| p.as_str()).to_string();
-        // Keep any path prefix of the base (GitHub Enterprise style `/api/v3`) out of the
-        // relative path octocrab joins onto the base URI.
-        let prefix = self.base.path().trim_end_matches('/');
-        let rel = path.strip_prefix(prefix).unwrap_or(&path).to_string();
-        let rel_uri: Uri = rel.parse().map_err(|_| refuse("not a valid path"))?;
-        Ok((rel_uri, path))
+        let url = if target.starts_with('/') {
+            let prefix = self.base.path().trim_end_matches('/');
+            let mut joined = self.base.clone();
+            let (path, query) = target
+                .split_once('?')
+                .map_or((target, None), |(p, q)| (p, Some(q)));
+            joined.set_path(&format!("{prefix}{path}"));
+            joined.set_query(query);
+            joined
+        } else {
+            let url = Url::parse(target).map_err(|_| refuse("not a valid URL"))?;
+            if url.scheme() != self.base.scheme()
+                || url.host_str() != self.base.host_str()
+                || url.port_or_known_default() != self.base.port_or_known_default()
+            {
+                return Err(refuse("URL is not on the GitHub API host"));
+            }
+            url
+        };
+        let path = match url.query() {
+            Some(q) => format!("{}?{q}", url.path()),
+            None => url.path().to_string(),
+        };
+        Ok((url, path))
     }
 
     async fn send_once(
         &self,
         method: &Method,
-        uri: &Uri,
+        url: &Url,
         path: &str,
         auth: &Secret,
         body: Option<&serde_json::Value>,
@@ -229,34 +256,28 @@ impl Http {
         let mut auth_value = HeaderValue::from_str(&format!("Bearer {}", auth.expose()))
             .map_err(|_| GithubError::Key("credential is not a valid header value".into()))?;
         auth_value.set_sensitive(true);
-        let builder = http::Request::builder()
-            .method(method.clone())
-            .uri(uri.clone())
-            .header(AUTHORIZATION, auth_value)
-            // octocrab adds `X-GitHub-Api-Version: 2022-11-28` and `User-Agent: octocrab` to
-            // every request (appended, so setting them here would duplicate them).
-            .header(ACCEPT, "application/vnd.github+json");
         let transport = |e: &dyn std::fmt::Display| GithubError::Transport {
             method: method.to_string(),
             path: path.to_string(),
             message: clean_message(&e.to_string()),
         };
-        let request = self
-            .octo
-            .build_request(builder, body)
-            .map_err(|e| transport(&e))?;
-        let response = self
-            .octo
-            .execute(request)
+        let mut request = self
+            .client
+            .request(method.clone(), url.clone())
+            .header(AUTHORIZATION, auth_value);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request
+            .send()
             .await
-            .map_err(|e| transport(&e))?;
+            .map_err(|e| transport(&e.without_url()))?;
         let status = response.status().as_u16();
         let headers = response.headers().clone();
-        let text = self
-            .octo
-            .body_to_string(response)
+        let text = response
+            .text()
             .await
-            .map_err(|e| transport(&e))?;
+            .map_err(|e| transport(&e.without_url()))?;
         let request_id = header_str(&headers, "x-github-request-id")
             .unwrap_or("-")
             .to_string();

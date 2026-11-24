@@ -1,10 +1,10 @@
-//! [`GitHub`] over the REST API, via [`Http`] (octocrab with rustls).
+//! [`GitHub`] over the REST API, via [`Http`] (reqwest with rustls).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use http::Method;
+use reqwest::Method;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -35,22 +35,22 @@ enum Cred {
 }
 
 /// The real GitHub implementation.
-pub struct OctoGitHub {
+pub struct RestGitHub {
     http: Http,
     auth: Arc<AppAuth>,
     redactor: Redactor,
 }
 
-impl std::fmt::Debug for OctoGitHub {
+impl std::fmt::Debug for RestGitHub {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OctoGitHub")
+        f.debug_struct("RestGitHub")
             .field("http", &self.http)
             .field("auth", &self.auth)
             .finish_non_exhaustive()
     }
 }
 
-impl OctoGitHub {
+impl RestGitHub {
     /// A client using `http` for transport and `auth` for credentials. `redactor` is applied
     /// to every comment, PR title and PR body before it is sent (G8); pattern redaction is
     /// always on, known secrets come from the caller (the claude env file values).
@@ -313,7 +313,7 @@ fn label_info(l: RawLabel) -> LabelInfo {
 // ---------------------------------------------------------------------- the trait
 
 #[async_trait]
-impl GitHub for OctoGitHub {
+impl GitHub for RestGitHub {
     async fn app(&self) -> Result<AppInfo> {
         let raw: RawApp = self.get("/app", Cred::App).await?;
         Ok(AppInfo {

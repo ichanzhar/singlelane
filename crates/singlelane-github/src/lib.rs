@@ -5,7 +5,7 @@
 //!   tokens never appear in logs or errors).
 //! - [`api`]: the [`GitHub`] trait, exactly the operations the factory needs. It has no merge
 //!   or approve method (G3 by construction).
-//! - [`octo`]: [`OctoGitHub`], the REST implementation on octocrab with rustls, over
+//! - [`rest`]: [`RestGitHub`], the REST implementation (API version 2026-03-10), over
 //!   [`http::Http`] (retries with backoff, `Retry-After`, request-id logging, pagination).
 //! - [`fake`]: [`FakeGitHub`], an in-memory implementation for tests of full flows.
 //! - [`claim`]: the claim (label swap, re-read, verify; G5).
@@ -21,7 +21,7 @@ pub mod error;
 pub mod fake;
 pub mod http;
 pub mod labels;
-pub mod octo;
+pub mod rest;
 pub mod secret;
 pub mod task;
 pub mod types;
@@ -30,5 +30,5 @@ pub use api::GitHub;
 pub use auth::{AppAuth, AppKey, TokenProvider};
 pub use error::{GithubError, Result};
 pub use fake::FakeGitHub;
-pub use octo::OctoGitHub;
+pub use rest::RestGitHub;
 pub use secret::Secret;

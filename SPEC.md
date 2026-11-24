@@ -116,7 +116,7 @@ Cargo workspace:
 | Crate | Kind | Responsibility |
 |---|---|---|
 | `singlelane-core` | lib | Config types and validation, state machine, policy (trusted-author filter, protected-path guard, redaction), failure classification, schedule and working-hours logic, prompt and task rendering, notification message formatting, `doctor` check result format. Pure, no I/O. |
-| `singlelane-github` | lib | GitHub App auth and `TokenProvider`, `GitHub` trait plus an octocrab-based implementation and an in-memory fake for tests, claim logic, the GitHub `doctor` checks. |
+| `singlelane-github` | lib | GitHub App auth and `TokenProvider`, `GitHub` trait plus a REST implementation (reqwest with rustls) and an in-memory fake for tests, claim logic, the GitHub `doctor` checks. |
 | `singlelane-exec` | lib | `ProcessRunner` trait (git, docker compose, gh) plus a real implementation and a recording fake. Workspace management, compose rendering, job executor. |
 | `singlelane` | bin | CLI and daemon (`singlelane run`, etc.). History store. |
 | `agent-runner` | bin | Runs inside the agent container, replaces the old entrypoint script. |
@@ -237,8 +237,12 @@ Token handling:
 - Installation tokens are opaque: since 2026-04-27 GitHub rolls out a stateless format
   (`ghs_<app id>_<jwt>`, longer than 40 characters). Nothing may assume a token length or
   character set; redaction covers both formats.
-- REST API version: `2022-11-28`, the version octocrab sends (supported until 2028-03-10; a newer
-  `2026-03-10` exists). Moving to a newer version is a deliberate change with its own tests.
+- REST API version: every request sends `X-GitHub-Api-Version: 2026-03-10`, the latest version
+  GitHub lists (`2022-11-28` is supported until 2028-03-10). None of its breaking changes touch a
+  field singlelane reads (it removes `merge_commit_sha` and the singular `assignee` from PR and
+  issue responses). A test asserts the header on every request. Moving to a newer version is a
+  deliberate change: read GitHub's breaking-changes page for it first.
+- Requests carry `User-Agent: singlelane/<version>` and `Accept: application/vnd.github+json`.
 - The token is used for the REST API, for git over HTTPS (`x-access-token` basic auth, passed
   per command as in 6.3) and as `GH_TOKEN` in the env of the `gh` child process only.
 - Git identity for agent commits and pushes is the app's bot user: name `<app-slug>[bot]`,
@@ -540,6 +544,7 @@ commands beyond /status /pause /resume.
 
 | Date | Decision | Why |
 |---|---|---|
+| 2026-11-24 | The GitHub client is reqwest (rustls, ring provider) instead of octocrab, and sends REST API version `2026-03-10`. This supersedes the octocrab parts of the two rows below; JWT signing with ring, own retries and pagination stay | singlelane used none of octocrab's typed API, only its raw request path, which always appends `X-GitHub-Api-Version: 2022-11-28` and `User-Agent: octocrab`. reqwest gives full header control, drops `Authorization` on cross-host redirects, removes about 20 crates from the tree, and is the HTTPS client phase 5 needs for Telegram anyway. The typed alternatives are stale (octorust last released 2025-03, roctogen 2025-08) and ureq is blocking. `cargo deny` now checks the two shipped Linux targets only |
 | 2026-11-24 | Checked against current GitHub docs: JWT `iss` sent as a string; header-less secondary rate limits back off exponentially from 60 s; `ghs_` redaction widened to the stateless installation token format; API version stays `2022-11-28` (octocrab's) | GitHub's JWT, rate-limit, token-format and API-version docs; the stateless token format (rollout from 2026-04-27) would otherwise have slipped past the `ghs_` pattern |
 | 2026-11-24 | The app JWT is signed with `ring` (already in the tree through rustls) instead of `jsonwebtoken` or octocrab's `jwt` features; octocrab is built without its auth and retry layers, and singlelane sets the `Authorization` header, retries and paginates itself (5.1) | `ring` already does RS256 signing for rustls, so no second RSA implementation (`jsonwebtoken` needs either the pure-Rust `rsa` stack or `aws-lc-rs` with its C build); the JWT itself is three base64url parts. singlelane needs the raw installation token for git and `gh` anyway, and octocrab's retry layer retries 5xx immediately for every method including POST (duplicate comments or PRs), never caps a rate-limit wait, and can't take a test clock |
 | 2026-11-24 | `GitHub` trait has `close_pull_request` (used when the owner closes the task's issue, section 3); claim removes the queue label first and treats a 404 as a lost race, no rollback when unconfirmed (6.1); comment and PR text is redacted inside the GitHub client | Section 3 requires closing the agent PR; the 404 on label removal is the only compare-and-swap the label API offers; redaction at the API boundary is a backstop for G8 |

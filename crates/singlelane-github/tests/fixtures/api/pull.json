@@ -17,7 +17,6 @@
   "updated_at": "2026-11-23T11:00:00Z",
   "closed_at": null,
   "merged_at": null,
-  "merge_commit_sha": null,
   "draft": false,
   "head": {
     "label": "owner:agent/issue-12",

@@ -1,4 +1,4 @@
-//! `OctoGitHub` and `AppAuth` against a wiremock server with recorded-style responses.
+//! `RestGitHub` and `AppAuth` against a wiremock server with recorded-style responses.
 
 // Test-only file: helpers outside `#[test]` fns may panic.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -16,9 +16,9 @@ use singlelane_core::repo::RepoName;
 use singlelane_core::schedule::FixedClock;
 use singlelane_github::auth::JwtClaims;
 use singlelane_github::doctor::check_permissions;
-use singlelane_github::http::{Http, RetryPolicy, Sleeper};
+use singlelane_github::http::{API_VERSION, Http, RetryPolicy, Sleeper};
 use singlelane_github::types::{LabelChange, LabelInfo, NewPullRequest};
-use singlelane_github::{AppAuth, AppKey, GitHub, GithubError, OctoGitHub, TokenProvider};
+use singlelane_github::{AppAuth, AppKey, GitHub, GithubError, RestGitHub, TokenProvider};
 use wiremock::matchers::{body_json, body_partial_json, header, method, path, query_param};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
@@ -83,7 +83,7 @@ struct Env {
     clock: Arc<FixedClock>,
     sleeper: Arc<RecordingSleeper>,
     auth: Arc<AppAuth>,
-    gh: OctoGitHub,
+    gh: RestGitHub,
 }
 
 /// Matches `Authorization: Bearer <JWT for APP_ID>`.
@@ -136,7 +136,7 @@ async fn env() -> Env {
         http.clone(),
         clock.clone(),
     ));
-    let gh = OctoGitHub::new(http, auth.clone(), Redactor::new());
+    let gh = RestGitHub::new(http, auth.clone(), Redactor::new());
     Env {
         server,
         clock,
@@ -185,7 +185,11 @@ async fn app_identity_uses_jwt_then_installation_token() {
         .and(path("/app"))
         .and(AppJwt)
         .and(header("accept", "application/vnd.github+json"))
-        .and(header("x-github-api-version", "2022-11-28"))
+        .and(header("x-github-api-version", API_VERSION))
+        .and(header(
+            "user-agent",
+            concat!("singlelane/", env!("CARGO_PKG_VERSION")),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(fixture("app", &env.server)))
         .expect(1)
         .mount(&env.server)
@@ -850,10 +854,38 @@ async fn transport_errors_are_reported_without_secrets() {
         .with_sleeper(sleeper.clone());
     let secret = singlelane_github::Secret::new(token());
     let err = http
-        .request(http::Method::GET, "/app", &secret, None)
+        .request(reqwest::Method::GET, "/app", &secret, None)
         .await
         .unwrap_err();
     assert!(err.is_transport(), "{err}");
     assert!(!format!("{err} {err:?}").contains(&token()));
     assert_eq!(sleeper.delays().len(), 1, "GET retried once");
+}
+
+#[tokio::test]
+async fn every_request_pins_the_latest_api_version_once() {
+    let env = env().await;
+    mount_token(&env).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/monorepo/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("branch_main", &env.server)))
+        .mount(&env.server)
+        .await;
+    env.gh.branch_protected(&repo(), "main").await.unwrap();
+    let requests = env.server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "token exchange + branch");
+    for r in &requests {
+        let versions: Vec<_> = r.headers.get_all("x-github-api-version").iter().collect();
+        assert_eq!(versions, vec!["2026-03-10"], "{}", r.url);
+        assert_eq!(
+            r.headers.get_all("user-agent").iter().count(),
+            1,
+            "{}",
+            r.url
+        );
+        assert_eq!(
+            r.headers.get("accept").unwrap(),
+            "application/vnd.github+json"
+        );
+    }
 }
