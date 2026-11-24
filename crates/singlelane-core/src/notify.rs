@@ -667,6 +667,7 @@ pub fn telegram_credentials<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::redact::tests::pem_marker;
     use crate::repo::RepoName;
 
     fn repo() -> RepoName {
@@ -838,7 +839,11 @@ mod tests {
             },
             Event::ImageUpdateFailed {
                 step: "build".into(),
-                reason: "-----BEGIN PRIVATE KEY-----\nMIIEabc\n-----END PRIVATE KEY-----".into(),
+                reason: format!(
+                    "{}\nMIIEabc\n{}",
+                    pem_marker("BEGIN", ""),
+                    pem_marker("END", "")
+                ),
             },
         ];
         for e in events {

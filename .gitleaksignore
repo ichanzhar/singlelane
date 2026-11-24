@@ -1,0 +1,4 @@
+# False positive: a PEM header written as a literal in a G8 redaction test (the key body was
+# fake, generated at runtime). The test now builds the header at runtime; this entry only
+# covers the commit that still has the literal.
+8930eac7cb0b882f7e0b21b820b08b0931901f69:crates/singlelane-core/src/policy/redact.rs:private-key:180
