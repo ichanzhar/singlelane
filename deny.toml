@@ -6,14 +6,6 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-  # chrono, chrono-tz and humantime (time handling in singlelane-core) are unmaintained,
-  # with no fixed releases. Accepted until singlelane-core moves off them; see the SPEC
-  # Decision log. Remove these entries in that change.
-  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; replacement pending" },
-  { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained; replacement pending" },
-  { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained; replacement pending" },
-]
 
 [licenses]
 version = 2

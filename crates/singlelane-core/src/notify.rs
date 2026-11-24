@@ -8,8 +8,8 @@
 use std::fmt;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 use crate::failure::FailureClass;
 use crate::inflight::ReleaseReason;
@@ -174,7 +174,7 @@ pub enum Event {
         /// The last failures with class.
         recent: Vec<RecentFailure>,
         /// For a usage-limit pause: when it ends.
-        until: Option<DateTime<Utc>>,
+        until: Option<Timestamp>,
         /// For `infra`: the failing check.
         failing_check: Option<String>,
     },
@@ -193,9 +193,9 @@ pub enum Event {
     /// Connectivity is back.
     NetworkRestored {
         /// Outage start.
-        start: DateTime<Utc>,
+        start: Timestamp,
         /// Outage end.
-        end: DateTime<Utc>,
+        end: Timestamp,
     },
     /// The in-flight PR waits for review.
     ReviewReminder {
@@ -327,12 +327,12 @@ pub fn format_duration(d: Duration) -> String {
 #[derive(Debug, Clone)]
 pub struct Formatter {
     redactor: Redactor,
-    tz: Tz,
+    tz: TimeZone,
 }
 
 impl Formatter {
     /// A formatter that redacts with `redactor` and shows times in `tz`.
-    pub fn new(redactor: Redactor, tz: Tz) -> Self {
+    pub fn new(redactor: Redactor, tz: TimeZone) -> Self {
         Self { redactor, tz }
     }
 
@@ -357,9 +357,9 @@ impl Formatter {
         self.link(&item.url(), &label)
     }
 
-    fn time(&self, t: DateTime<Utc>) -> String {
-        t.with_timezone(&self.tz)
-            .format("%Y-%m-%d %H:%M %Z")
+    fn time(&self, t: Timestamp) -> String {
+        t.to_zoned_datetime(self.tz.clone())
+            .strftime("%Y-%m-%d %H:%M %Z")
             .to_string()
     }
 
@@ -501,7 +501,7 @@ impl Formatter {
                 if *days_left == 1 { "" } else { "s" }
             ),
             Event::NetworkRestored { start, end } => {
-                let dur = (*end - *start).to_std().unwrap_or_default();
+                let dur = Duration::try_from(end.duration_since(*start)).unwrap_or_default();
                 format!(
                     "🌐 <b>Network restored</b>\nOutage from {} to {} ({}).",
                     self.time(*start),
@@ -677,7 +677,7 @@ mod tests {
     fn fmt() -> Formatter {
         Formatter::new(
             Redactor::with_secrets(["known-secret-value-123"]),
-            chrono_tz::Europe::Kyiv,
+            TimeZone::get("Europe/Kyiv").unwrap(),
         )
     }
 
@@ -688,9 +688,7 @@ mod tests {
     fn all_events() -> Vec<Event> {
         let issue = ItemRef::issue(repo(), 5);
         let pr = ItemRef::pr(repo(), 9);
-        let t0 = DateTime::parse_from_rfc3339("2026-11-24T08:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let t0: Timestamp = "2026-11-24T08:00:00Z".parse().unwrap();
         vec![
             Event::PrOpened {
                 issue: issue.clone(),
@@ -729,7 +727,7 @@ mod tests {
             Event::TokenExpiry { days_left: 7 },
             Event::NetworkRestored {
                 start: t0,
-                end: t0 + chrono::Duration::hours(3),
+                end: t0 + jiff::SignedDuration::from_hours(3),
             },
             Event::ReviewReminder {
                 pr: pr.clone(),
@@ -886,9 +884,7 @@ mod tests {
 
     #[test]
     fn usage_limit_pause_shows_local_until_time() {
-        let until = DateTime::parse_from_rfc3339("2026-11-24T10:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let until: Timestamp = "2026-11-24T10:00:00Z".parse().unwrap();
         let m = fmt().format(&Event::Paused {
             cause: PauseCause::Class(FailureClass::ClaudeUsageLimit),
             reason: "usage limit".into(),

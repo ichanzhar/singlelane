@@ -9,10 +9,8 @@ publish.workspace = true
 description = "Pure domain logic for singlelane: config, state machine, policy, schedule, rendering"
 
 [dependencies]
-chrono.workspace = true
-chrono-tz.workspace = true
 globset.workspace = true
-humantime.workspace = true
+jiff.workspace = true
 regex.workspace = true
 serde.workspace = true
 thiserror.workspace = true

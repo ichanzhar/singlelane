@@ -13,7 +13,7 @@
 use std::fmt;
 use std::sync::LazyLock;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use regex::Regex;
 
 /// The failure classes of SPEC 6.8.
@@ -180,7 +180,7 @@ pub struct FailureInput {
     /// How often this item was requeued as `network` in the last 24 hours.
     pub network_requeues_24h: u32,
     /// The current time, to turn relative reset times into instants.
-    pub now: Option<DateTime<Utc>>,
+    pub now: Option<Timestamp>,
 }
 
 /// The classifier's verdict.
@@ -189,7 +189,7 @@ pub struct Classification {
     /// The class.
     pub class: FailureClass,
     /// For `claude_usage_limit`: when the limit resets, if Claude said so.
-    pub resets_at: Option<DateTime<Utc>>,
+    pub resets_at: Option<Timestamp>,
     /// A short reason for comments and messages (not redacted; redact before posting).
     pub reason: String,
 }
@@ -297,7 +297,7 @@ pub fn classify(input: &FailureInput) -> Classification {
                 .and_then(|r| r.captures(&claude_text))
                 .and_then(|c| c.get(1))
                 .and_then(|m| m.as_str().parse::<i64>().ok())
-                .and_then(|secs| DateTime::from_timestamp(secs, 0))
+                .and_then(|secs| Timestamp::from_second(secs).ok())
                 .filter(|t| input.now.is_none_or(|now| *t > now));
             return Classification {
                 class: FailureClass::ClaudeUsageLimit,
@@ -479,10 +479,10 @@ mod tests {
     #[test]
     fn fixture_claude_usage_limit_with_reset_time() {
         let mut i = agent("Claude AI usage limit reached|1795600800", "");
-        i.now = DateTime::from_timestamp(1_795_590_000, 0);
+        i.now = Timestamp::from_second(1_795_590_000).ok();
         let c = classify(&i);
         assert_eq!(c.class, FailureClass::ClaudeUsageLimit);
-        assert_eq!(c.resets_at, DateTime::from_timestamp(1_795_600_800, 0));
+        assert_eq!(c.resets_at, Timestamp::from_second(1_795_600_800).ok());
     }
 
     #[test]

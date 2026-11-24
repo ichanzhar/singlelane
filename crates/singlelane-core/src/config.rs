@@ -11,8 +11,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chrono::{NaiveDate, NaiveTime};
-use chrono_tz::Tz;
+use jiff::civil::{Date, Time};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Span, SpanRelativeTo};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -38,7 +39,7 @@ pub struct Config {
     /// The only GitHub login whose issues and text are trusted (G1).
     pub trusted_user: String,
     /// Time zone for work hours, ticks and daily jobs.
-    pub timezone: Tz,
+    pub timezone: TimeZone,
     /// Work hours (G9).
     pub work_hours: WorkHours,
     /// Tick interval, aligned to the wall clock.
@@ -90,7 +91,7 @@ impl ClaudeChannel {
 #[derive(Debug, Clone)]
 pub struct ImageConfig {
     /// Local time of the nightly update; `None` disables it.
-    pub update_at: Option<NaiveTime>,
+    pub update_at: Option<Time>,
     /// Claude Code channel.
     pub claude_channel: ClaudeChannel,
     /// Directory with the Dockerfile.
@@ -109,7 +110,7 @@ pub struct GithubConfig {
     /// Private key PEM file.
     pub private_key_path: PathBuf,
     /// When `claude setup-token` was run (tokens last one year).
-    pub claude_token_created: Option<NaiveDate>,
+    pub claude_token_created: Option<Date>,
 }
 
 /// `[telegram]`.
@@ -118,7 +119,7 @@ pub struct TelegramConfig {
     /// Enabled events.
     pub notify: BTreeSet<EventKind>,
     /// Local time of the daily summary; `None` disables it.
-    pub daily_summary_at: Option<NaiveTime>,
+    pub daily_summary_at: Option<Time>,
     /// Review reminder period.
     pub review_reminder_after: Duration,
     /// Accept /status /pause /resume.
@@ -441,22 +442,48 @@ impl Errors {
     }
 }
 
-/// Parses a duration like `15m`, `90m`, `2h`, `3d` (humantime syntax). Zero is rejected.
+/// Parses a duration like `15m`, `90m`, `2h`, `1h30m`, `3d` (jiff's friendly format; ISO
+/// 8601 such as `PT15M` works too). A day is 24 hours. Zero, negative values and calendar
+/// units (months, years) are rejected.
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
-    let d = humantime::parse_duration(s.trim()).map_err(|e| format!("{s:?}: {e}"))?;
-    if d.is_zero() {
+    let span: Span = s.trim().parse().map_err(|e| format!("{s:?}: {e}"))?;
+    let d: SignedDuration = span
+        .to_duration(SpanRelativeTo::days_are_24_hours())
+        .map_err(|e| format!("{s:?}: {e}"))?;
+    if d.is_zero() || d.is_negative() {
         return Err(format!("{s:?}: must be greater than zero"));
     }
-    Ok(d)
+    Duration::try_from(d).map_err(|e| format!("{s:?}: {e}"))
 }
 
 /// Parses a local wall-clock time `HH:MM`.
-pub fn parse_hhmm(s: &str) -> Result<NaiveTime, String> {
-    let ok_shape = s.len() == 5 && s.as_bytes().get(2) == Some(&b':');
-    if !ok_shape {
-        return Err(format!("{s:?}: expected HH:MM"));
+pub fn parse_hhmm(s: &str) -> Result<Time, String> {
+    let err = || format!("{s:?}: expected HH:MM");
+    let (h, m) = s.split_once(':').ok_or_else(err)?;
+    let two_digits = |p: &str| p.len() == 2 && p.bytes().all(|b| b.is_ascii_digit());
+    if !two_digits(h) || !two_digits(m) {
+        return Err(err());
     }
-    NaiveTime::parse_from_str(s, "%H:%M").map_err(|_| format!("{s:?}: expected HH:MM"))
+    let h: i8 = h.parse().map_err(|_| err())?;
+    let m: i8 = m.parse().map_err(|_| err())?;
+    Time::new(h, m, 0, 0).map_err(|_| err())
+}
+
+/// Parses a date `YYYY-MM-DD`.
+pub fn parse_date(s: &str) -> Result<Date, String> {
+    let err = || format!("{s:?}: expected YYYY-MM-DD");
+    let shape = s.len() == 10
+        && s.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    if !shape {
+        return Err(err());
+    }
+    s.parse::<Date>().map_err(|_| err())
 }
 
 /// Docker size strings: digits with an optional `b`, `k`, `m` or `g` suffix.
@@ -522,7 +549,7 @@ impl Config {
         if !is_valid_login(&trusted_user) {
             errs.add("trusted_user", "must be a GitHub user login");
         }
-        let timezone = match raw.timezone.parse::<Tz>() {
+        let timezone = match TimeZone::get(raw.timezone.trim()) {
             Ok(tz) => Some(tz),
             Err(_) => {
                 errs.add("timezone", format!("unknown time zone {:?}", raw.timezone));
@@ -561,9 +588,9 @@ impl Config {
         if !poll_interval.is_zero() {
             let secs = poll_interval.as_secs();
             if secs < 60
-                || secs % 60 != 0
+                || !secs.is_multiple_of(60)
                 || poll_interval.subsec_nanos() != 0
-                || 86_400 % secs != 0
+                || !86_400u64.is_multiple_of(secs)
             {
                 errs.add(
                     "poll_interval",
@@ -612,13 +639,8 @@ impl Config {
             &raw.github.private_key_path,
         );
         let claude_token_created = raw.github.claude_token_created.as_deref().and_then(|s| {
-            NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .map_err(|_| {
-                    errs.add(
-                        "github.claude_token_created",
-                        format!("{s:?}: expected YYYY-MM-DD"),
-                    )
-                })
+            parse_date(s)
+                .map_err(|e| errs.add("github.claude_token_created", e))
                 .ok()
         });
 
@@ -1088,7 +1110,7 @@ name = "me/app"
     fn spec_example_parses() {
         let c = Config::from_toml(EXAMPLE).unwrap();
         assert_eq!(c.trusted_user, "your-github-login");
-        assert_eq!(c.timezone, chrono_tz::Europe::Kyiv);
+        assert_eq!(c.timezone.iana_name(), Some("Europe/Kyiv"));
         assert_eq!(c.poll_interval, Duration::from_secs(900));
         assert_eq!(c.keep_failed_workspaces, Duration::from_secs(3 * 86_400));
         assert_eq!(c.agent.job_timeout, Duration::from_secs(90 * 60));
@@ -1097,10 +1119,7 @@ name = "me/app"
         assert_eq!(c.repos[0].sidecars[0].name, "db");
         assert!(c.repos[0].protected_paths.is_protected("CODEOWNERS"));
         assert_eq!(c.image.claude_channel, ClaudeChannel::Stable);
-        assert_eq!(
-            c.github.claude_token_created,
-            NaiveDate::from_ymd_opt(2026, 11, 23)
-        );
+        assert_eq!(c.github.claude_token_created, Date::new(2026, 11, 23).ok());
     }
 
     #[test]
@@ -1116,7 +1135,7 @@ name = "me/app"
                 .is_protected(".github/workflows/ci.yml")
         );
         assert_eq!(c.agent.model, "opus");
-        assert_eq!(c.image.update_at, NaiveTime::from_hms_opt(3, 0, 0));
+        assert_eq!(c.image.update_at, Time::new(3, 0, 0, 0).ok());
         assert_eq!(c.telegram.notify.len(), EventKind::ALL.len());
     }
 
@@ -1132,10 +1151,7 @@ name = "me/app"
         assert!(c.image.probe_claude);
         assert!(!c.telegram.commands);
         let c = Config::from_toml(MINIMAL).unwrap();
-        assert_eq!(
-            c.telegram.daily_summary_at,
-            NaiveTime::from_hms_opt(21, 0, 0)
-        );
+        assert_eq!(c.telegram.daily_summary_at, Time::new(21, 0, 0, 0).ok());
     }
 
     #[test]
@@ -1253,6 +1269,58 @@ base_branch = "agent/x"
             "repo[0].sidecar[0].name",
         ] {
             assert!(e.mentions(f), "missing error for {f}: {e}");
+        }
+    }
+
+    #[test]
+    fn duration_formats() {
+        let ok = |s: &str, secs: u64| {
+            assert_eq!(parse_duration(s), Ok(Duration::from_secs(secs)), "{s}")
+        };
+        ok("15m", 900);
+        ok("90m", 5400);
+        ok("2h", 7200);
+        ok("1h30m", 5400);
+        ok("3d", 3 * 86_400);
+        ok("10000s", 10_000);
+        ok("PT15M", 900);
+        ok(" 2h ", 7200);
+        for bad in ["", "soon", "0s", "-5m", "1 month", "1y", "15"] {
+            assert!(parse_duration(bad).is_err(), "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn time_and_date_formats() {
+        assert_eq!(
+            parse_hhmm("07:05"),
+            Time::new(7, 5, 0, 0).map_err(|e| e.to_string())
+        );
+        for bad in [
+            "7:00", "07:0", "24:00", "07:60", "0700", "07:00:00", "aa:bb", "+7:00",
+        ] {
+            assert!(parse_hhmm(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            parse_date("2026-11-23"),
+            Date::new(2026, 11, 23).map_err(|e| e.to_string())
+        );
+        for bad in [
+            "20261123",
+            "2026-11-31",
+            "2026-1-01",
+            "26-11-23",
+            "2026-11-23T00:00",
+        ] {
+            assert!(parse_date(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn time_zone_aliases_resolve_from_the_bundled_database() {
+        for tz in ["Europe/Kyiv", "Europe/Kiev", "UTC", "America/New_York"] {
+            let t = MINIMAL.replace("\"UTC\"", &format!("{tz:?}"));
+            assert!(Config::from_toml(&t).is_ok(), "{tz}");
         }
     }
 
