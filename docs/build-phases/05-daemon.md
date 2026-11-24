@@ -20,7 +20,8 @@ Build:
    backoff, all events including the daily summary, token-expiry warnings and
    network_restored, the `getUpdates` command poller (/status, /pause, /resume) that accepts
    only TELEGRAM_CHAT_ID, `resume` refusing while the 6.8 check still fails, and
-   `singlelane notify-test`. Use the Bot API over reqwest with rustls; check the current Bot API
+   `singlelane notify-test`. Use the Bot API over reqwest with rustls and the ring
+   provider, the same setup as `singlelane-github`'s `http` module; check the current Bot API
    docs for request and response shapes. Mock Telegram with wiremock in tests.
 5. Deliverables from SPEC 13: the systemd unit, example config and env files, and a README
    with install steps on Raspberry Pi OS or Ubuntu arm64, a `singlelane` system user, file

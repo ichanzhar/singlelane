@@ -2,12 +2,12 @@
 # Checked in CI by scripts/check-guarantees.sh. Add each id in the phase that implements it;
 # never remove one.
 G1  Trusted input only
+G3  Never merge, never approve                  (GitHub API surface; push rules in phase 4)
 G4  Protected paths
+G5  Single claim                                (claim race; host lock file in phase 5)
 G8  No secret leakage
 G9  Working hours
 G10 One task in flight
-# G2 No GitHub credentials in the agent stack   (phase 2/4)
-# G3 Never merge, never approve                 (phase 4)
-# G5 Single claim                               (phase 2/5)
+# G2 No GitHub credentials in the agent stack   (phase 4)
 # G6 Always a visible end state                 (phase 4/5)
 # G7 Circuit breaker                            (phase 5)

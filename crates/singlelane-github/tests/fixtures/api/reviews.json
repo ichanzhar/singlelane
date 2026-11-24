@@ -1,0 +1,21 @@
+[
+  {
+    "id": 6001,
+    "node_id": "PRR_kwDOAAAAAA",
+    "user": { "login": "owner", "id": 1000, "type": "User" },
+    "body": "Rename the toggle.",
+    "state": "CHANGES_REQUESTED",
+    "html_url": "https://github.com/owner/monorepo/pull/15#pullrequestreview-6001",
+    "submitted_at": "2026-11-23T11:00:00Z",
+    "commit_id": "1111111111111111111111111111111111111111",
+    "author_association": "OWNER"
+  },
+  {
+    "id": 6002,
+    "user": { "login": "owner", "id": 1000, "type": "User" },
+    "body": "",
+    "state": "COMMENTED",
+    "submitted_at": "2026-11-23T11:01:00Z",
+    "author_association": "OWNER"
+  }
+]

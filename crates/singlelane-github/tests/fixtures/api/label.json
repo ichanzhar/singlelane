@@ -1,0 +1,9 @@
+{
+  "id": 1,
+  "node_id": "LA_kwDOAAAAAA",
+  "url": "{{BASE}}/repos/owner/monorepo/labels/agent-ready",
+  "name": "agent-ready",
+  "color": "ffffff",
+  "default": false,
+  "description": "old description"
+}

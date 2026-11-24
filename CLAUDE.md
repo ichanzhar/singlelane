@@ -24,7 +24,7 @@ personal repo names, or logs from real runs. Examples use obvious placeholders.
   bins, with context on every external call.
 - External commands: argument vectors only, never through a shell. Secrets go only in child
   process env vars, never in arguments (arguments show up in `ps`).
-- Before writing an API call against a crate (octocrab, bollard, rusqlite, jiff...),
+- Before writing an API call against a crate (reqwest, bollard, rusqlite, jiff...),
   check its current signature on docs.rs. Do not guess.
 - Keep `singlelane-core` pure: no tokio, no network, no filesystem.
 

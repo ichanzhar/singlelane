@@ -27,8 +27,10 @@ static PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         // PEM blocks, including truncated ones without an END line.
         r"(?s)-----BEGIN [A-Z0-9 ]*-----.*?(?:-----END [A-Z0-9 ]*-----|\z)",
-        // GitHub tokens.
-        r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}",
+        // GitHub tokens. Installation tokens minted since 2026-04-27 may use the stateless
+        // format `ghs_<app id>_<jwt>` (underscores, dots, dashes), so the body is wider than
+        // base62.
+        r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_.\-]{20,}",
         r"github_pat_[A-Za-z0-9_]{20,}",
         // Anthropic API keys and OAuth tokens.
         r"sk-ant-[A-Za-z0-9_\-]{8,}",
@@ -160,6 +162,21 @@ pub(crate) mod tests {
         }
         let pat = fake("github_pat_", 70);
         assert!(!r.redact(&pat).contains(&pat));
+    }
+
+    #[test]
+    fn g8_stateless_installation_tokens_are_redacted() {
+        let r = Redactor::new();
+        let tok = format!(
+            "ghs_123456_{}.{}.{}",
+            fake("eyJhbGciOi", 30),
+            fake("eyJpc3Mi", 60),
+            fake("", 40)
+        );
+        let out = r.redact(&format!("remote: Invalid token {tok}, retry"));
+        assert!(!out.contains("123456_"), "{out}");
+        assert!(!out.contains("eyJ"), "{out}");
+        assert_eq!(out, format!("remote: Invalid token {REDACTED}, retry"));
     }
 
     #[test]

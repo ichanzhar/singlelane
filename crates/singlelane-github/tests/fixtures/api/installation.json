@@ -1,0 +1,30 @@
+{
+  "id": 12345678,
+  "client_id": "Iv1.0000000000000000",
+  "account": {
+    "login": "owner",
+    "id": 1000,
+    "type": "User",
+    "site_admin": false
+  },
+  "repository_selection": "selected",
+  "access_tokens_url": "{{BASE}}/app/installations/12345678/access_tokens",
+  "repositories_url": "{{BASE}}/installation/repositories",
+  "app_id": 123456,
+  "app_slug": "singlelane-test",
+  "target_id": 1000,
+  "target_type": "User",
+  "permissions": {
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write",
+    "workflows": "write"
+  },
+  "events": [],
+  "created_at": "2026-11-20T10:05:00Z",
+  "updated_at": "2026-11-20T10:05:00Z",
+  "single_file_name": null,
+  "suspended_by": null,
+  "suspended_at": null
+}

@@ -45,7 +45,7 @@ Each guarantee must have at least one automated test whose name starts with its 
   Network failures and "blocked with question" outcomes never count. This stops a broken
   setup from marking the whole queue as blocked.
 - **G8 No secret leakage.** Tokens never appear in logs, comments, PR bodies, Telegram
-  messages, or error messages. Redact known secret values and secret-shaped strings (`ghs_`, `ghp_`, `github_pat_`,
+  messages, or error messages. Redact known secret values and secret-shaped strings (`ghs_` in both the classic and the stateless `ghs_<app id>_<jwt>` format, `ghp_`, `github_pat_`,
   `sk-ant-`, JWTs, PEM blocks) before writing any externally visible text.
 - **G9 Working hours.** No new job starts outside working hours in the configured time zone.
   Running jobs finish normally.
@@ -115,8 +115,8 @@ Cargo workspace:
 
 | Crate | Kind | Responsibility |
 |---|---|---|
-| `singlelane-core` | lib | Config types and validation, state machine, policy (trusted-author filter, protected-path guard, redaction), failure classification, schedule and working-hours logic, prompt and task rendering, notification message formatting. Pure, no I/O. |
-| `singlelane-github` | lib | `GitHub` trait plus an octocrab-based implementation and an in-memory fake for tests. |
+| `singlelane-core` | lib | Config types and validation, state machine, policy (trusted-author filter, protected-path guard, redaction), failure classification, schedule and working-hours logic, prompt and task rendering, notification message formatting, `doctor` check result format. Pure, no I/O. |
+| `singlelane-github` | lib | GitHub App auth and `TokenProvider`, `GitHub` trait plus a REST implementation (reqwest with rustls) and an in-memory fake for tests, claim logic, the GitHub `doctor` checks. |
 | `singlelane-exec` | lib | `ProcessRunner` trait (git, docker compose, gh) plus a real implementation and a recording fake. Workspace management, compose rendering, job executor. |
 | `singlelane` | bin | CLI and daemon (`singlelane run`, etc.). History store. |
 | `agent-runner` | bin | Runs inside the agent container, replaces the old entrypoint script. |
@@ -220,9 +220,29 @@ App settings (documented in the README with screenshots-free step by step text):
 - Installable only on the owner's account; installed with "Only select repositories".
 
 Token handling:
-- Sign a short-lived JWT with the private key, exchange it for an installation access token
+- Sign a short-lived JWT with the private key (RS256, `iat` = now - 60 s, `exp` = now + 9 min,
+  `iss` = app id as a string; GitHub also accepts the client id and recommends it), exchange it for an installation access token
   (valid about 1 hour), cache it in memory only, and refresh it when less than 10 minutes remain.
   Mint a fresh token right before publish, since jobs can run longer than an hour.
+- REST calls retry 5xx on idempotent methods (GET, PUT, PATCH, DELETE) with exponential backoff,
+  and rate limits (429, or 403 with `Retry-After`, `x-ratelimit-remaining: 0` or a rate-limit
+  message) on any method, waiting `Retry-After`, else until `x-ratelimit-reset`, else 60 s doubled
+  on every further attempt (GitHub's rate-limit guidance). A POST
+  that failed with 5xx is not retried (it may have been applied). A wait longer than 90 s is not
+  taken: the error is returned as a rate limit (`network`, 6.8). Logs carry the
+  `x-github-request-id`, never a credential. Pagination follows `Link: rel="next"` only to the API
+  host.
+- Comment bodies and PR titles and bodies are redacted (G8) inside the GitHub client, as a
+  backstop to redaction by the caller.
+- Installation tokens are opaque: since 2026-04-27 GitHub rolls out a stateless format
+  (`ghs_<app id>_<jwt>`, longer than 40 characters). Nothing may assume a token length or
+  character set; redaction covers both formats.
+- REST API version: every request sends `X-GitHub-Api-Version: 2026-03-10`, the latest version
+  GitHub lists (`2022-11-28` is supported until 2028-03-10). None of its breaking changes touch a
+  field singlelane reads (it removes `merge_commit_sha` and the singular `assignee` from PR and
+  issue responses). A test asserts the header on every request. Moving to a newer version is a
+  deliberate change: read GitHub's breaking-changes page for it first.
+- Requests carry `User-Agent: singlelane/<version>` and `Accept: application/vnd.github+json`.
 - The token is used for the REST API, for git over HTTPS (`x-access-token` basic auth, passed
   per command as in 6.3) and as `GH_TOKEN` in the env of the `gh` child process only.
 - Git identity for agent commits and pushes is the app's bot user: name `<app-slug>[bot]`,
@@ -237,6 +257,15 @@ Token handling:
 Swap the queue label for `agent-working`, re-read the item, and abort the job if the label
 set is not as expected. Record the attempt in the history store. If attempts exceed
 `max_attempts`, move to `agent-blocked` with a comment instead of running.
+
+Details: the claim first checks the item is open and in its queue state (issue: `agent-ready`,
+authored by `trusted_user`; PR: `agent-revise`, head on an `agent/` branch of the same repo). It
+then removes the queue label first: GitHub answers 404 when the label is already gone (the REST
+docs only say "404 if the label does not exist"; the per-host lock file of G5 stays the primary
+guard), so of two racing claimers only one proceeds (the other stops before adding anything). It adds
+`agent-working`, removes a leftover `agent-blocked`, and re-reads: the item must be open and carry
+`agent-working` and no other workflow label (`agent-pr` aside). If not, the job does not run and no
+labels are rolled back; the in-flight rules (3.1) report the conflict.
 
 ### 6.2 Workspace
 `<data_dir>/work/<job-id>/{src,task,out}`. Job id: `<owner>__<repo>-<n>-<timestamp>`.
@@ -416,7 +445,7 @@ A build failure is never counted by the breaker and never pauses the factory.
 | `singlelane tick [--dry-run] [--force-hours]` | One scheduling pass, then exit |
 | `singlelane job --repo R (--issue N \| --pr N) [--dry-run]` | Run one specific item (testing) |
 | `singlelane doctor [--with-claude]` | Preflight checks, see below |
-| `singlelane setup-labels` | Create or update labels in all repos |
+| `singlelane setup-labels` | Create or update labels in all repos (name, color, description) |
 | `singlelane status` | In-flight task and its state, running job, queue size per repo, last 20 jobs from history, pause and breaker state |
 | `singlelane pause [--reason]` / `singlelane resume` | Manage the PAUSE file |
 | `singlelane recover` | Run startup recovery manually |
@@ -426,12 +455,13 @@ A build failure is never counted by the breaker and never pauses the factory.
 
 `--dry-run` means read-only against GitHub, and no container is started. Print what would happen.
 
-`doctor` checks: config is valid; the private key file exists with mode 600; the JWT is
-accepted (`GET /app`); the installation token can be minted; the installation covers every
+`doctor` checks: config is valid; the private key file exists with mode 600 and parses; the JWT is
+accepted (`GET /app`) and the app id matches `github.app_id`; the installation token can be minted;
+the installation is not suspended (WARN if it covers all repositories instead of selected ones); the installation covers every
 configured repo (`GET /installation/repositories`); the installation's permissions are exactly
 the set in 5.1 (FAIL on anything extra, such as workflows or administration, FAIL on anything
 missing); `trusted_user` is not the app's bot user; labels exist; the base branch reports
-`protected: true` (WARN with a hint about branch rules and plan requirements if not); `gh --version` >= 2.99.0; docker and the compose plugin are available; the
+`protected: true`, which GitHub sets for classic branch protection and for rulesets (WARN with a hint about branch rules and plan requirements if not); `gh --version` >= 2.99.0; docker and the compose plugin are available; the
 agent image exists and is arm64; the claude env file is valid; time zone; free disk space in
 `data_dir` (warn below 20 GB); Telegram token and chat id valid (`getMe`, and the chat is
 reachable), WARN if not configured; days until `claude_token_created` turns 1 year old. `--with-claude`: run the image with a one-turn prompt to prove
@@ -514,6 +544,10 @@ commands beyond /status /pause /resume.
 
 | Date | Decision | Why |
 |---|---|---|
+| 2026-11-24 | The GitHub client is reqwest (rustls, ring provider) instead of octocrab, and sends REST API version `2026-03-10`. This supersedes the octocrab parts of the two rows below; JWT signing with ring, own retries and pagination stay | singlelane used none of octocrab's typed API, only its raw request path, which always appends `X-GitHub-Api-Version: 2022-11-28` and `User-Agent: octocrab`. reqwest gives full header control, drops `Authorization` on cross-host redirects, removes about 20 crates from the tree, and is the HTTPS client phase 5 needs for Telegram anyway. The typed alternatives are stale (octorust last released 2025-03, roctogen 2025-08) and ureq is blocking. `cargo deny` now checks the two shipped Linux targets only |
+| 2026-11-24 | Checked against current GitHub docs: JWT `iss` sent as a string; header-less secondary rate limits back off exponentially from 60 s; `ghs_` redaction widened to the stateless installation token format; API version stays `2022-11-28` (octocrab's) | GitHub's JWT, rate-limit, token-format and API-version docs; the stateless token format (rollout from 2026-04-27) would otherwise have slipped past the `ghs_` pattern |
+| 2026-11-24 | The app JWT is signed with `ring` (already in the tree through rustls) instead of `jsonwebtoken` or octocrab's `jwt` features; octocrab is built without its auth and retry layers, and singlelane sets the `Authorization` header, retries and paginates itself (5.1) | `ring` already does RS256 signing for rustls, so no second RSA implementation (`jsonwebtoken` needs either the pure-Rust `rsa` stack or `aws-lc-rs` with its C build); the JWT itself is three base64url parts. singlelane needs the raw installation token for git and `gh` anyway, and octocrab's retry layer retries 5xx immediately for every method including POST (duplicate comments or PRs), never caps a rate-limit wait, and can't take a test clock |
+| 2026-11-24 | `GitHub` trait has `close_pull_request` (used when the owner closes the task's issue, section 3); claim removes the queue label first and treats a 404 as a lost race, no rollback when unconfirmed (6.1); comment and PR text is redacted inside the GitHub client | Section 3 requires closing the agent PR; the 404 on label removal is the only compare-and-swap the label API offers; redaction at the API boundary is a backstop for G8 |
 | 2026-11-24 | Time handling uses `jiff` with its bundled tz database instead of chrono, chrono-tz and humantime; the cargo-deny ignores for them are removed | All three were declared unmaintained (RUSTSEC-2026-0542/0543/0555); stale tz rules would break G9. The bundled database keeps `singlelane-core` free of filesystem reads, and tz updates arrive as `jiff-tzdb` releases through Dependabot |
 | 2026-11-24 | CI builds the aarch64 binaries on GitHub's native ARM runner (`ubuntu-22.04-arm`) instead of `cross`; `cargo-deny` enforces the rustls-only rule; the chrono, chrono-tz and humantime "unmaintained" advisories are ignored until core moves off them | Native builds are simpler and also run the tests on aarch64; 22.04's glibc 2.35 keeps the binary runnable on Raspberry Pi OS bookworm |
 | 2026-11-24 | Phase 1 fills gaps: `agent.implement_prompt`/`revise_prompt` override options; omitted daily times inside a present section disable the job; `poll_interval` must divide 24 h; `agent-ready` + `agent-blocked` counts as queued; host-observed GitHub rate limits classify as `network` | The spec named these behaviors without fixing the details; these are the conservative readings |

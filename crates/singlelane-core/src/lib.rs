@@ -14,8 +14,10 @@
 //! - [`render`]: task and prompt rendering (SPEC 6.4).
 //! - [`failure`]: failure classification (SPEC 6.8).
 //! - [`notify`]: Telegram message formatting (SPEC 11).
+//! - [`doctor`]: `doctor` check results and output format (SPEC 9).
 
 pub mod config;
+pub mod doctor;
 pub mod failure;
 pub mod inflight;
 pub mod notify;

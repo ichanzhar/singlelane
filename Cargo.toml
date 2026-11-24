@@ -17,7 +17,23 @@ repository = "https://github.com/ichanzhar/singlelane"
 publish = false
 
 [workspace.dependencies]
+singlelane-core = { path = "crates/singlelane-core" }
+singlelane-github = { path = "crates/singlelane-github" }
 anyhow = "1.0.105"
+async-trait = "0.1.92"
+base64 = "0.22.1"
+clap = { version = "4.6.9", features = ["derive"] }
+# rustls only (SPEC 4), with the ring provider installed by singlelane (no aws-lc).
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "http2"] }
+ring = "0.17.14"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = { version = "1.13.0", features = ["std"] }
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+wiremock = "0.6.5"
 globset = "0.4.22"
 # No system tz lookups: the tz database is bundled, so singlelane-core never reads the filesystem.
 jiff = { version = "1.0.2", default-features = false, features = ["std", "tz-fat", "tzdb-bundle-always", "perf-inline"] }
