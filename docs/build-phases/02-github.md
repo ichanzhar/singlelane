@@ -24,10 +24,10 @@ Build in `singlelane-github`:
    (key file mode, JWT accepted, installation token minted, installation covers the repos,
    permissions exactly as in SPEC 5.1, trusted_user is not the app bot, labels exist, base
    branch protected).
-5b. CI for this repository: `.github/workflows/ci.yml` running fmt, clippy -D warnings and
-   tests on ubuntu-latest, plus a release build for aarch64-unknown-linux-gnu with cross.
-   Pin actions to full commit SHAs, set `permissions: contents: read`, and add
-   `.github/dependabot.yml` for cargo and github-actions.
+5b. CI for this repository already exists (`.github/workflows/ci.yml`, `security.yml`,
+   `dependabot.yml`, `deny.toml`, added after phase 1). Keep it green; when you add
+   dependencies, make sure `cargo deny check` still passes (rustls only, no OpenSSL), and add
+   any guarantee you implement with tests to `scripts/guarantees.txt`.
    Output format: PASS / WARN / FAIL lines with a fix hint.
 6. Tests: JWT claims and expiry, token refresh before expiry, a permissions check that fails
    on an extra `workflows` permission, G8 redaction of `ghs_` tokens and PEM blocks; the octocrab implementation against wiremock with recorded-style JSON for each call,

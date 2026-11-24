@@ -513,6 +513,7 @@ commands beyond /status /pause /resume.
 
 | Date | Decision | Why |
 |---|---|---|
+| 2026-11-24 | CI builds the aarch64 binaries on GitHub's native ARM runner (`ubuntu-22.04-arm`) instead of `cross`; `cargo-deny` enforces the rustls-only rule; the chrono, chrono-tz and humantime "unmaintained" advisories are ignored until core moves off them | Native builds are simpler and also run the tests on aarch64; 22.04's glibc 2.35 keeps the binary runnable on Raspberry Pi OS bookworm |
 | 2026-11-24 | Phase 1 fills gaps: `agent.implement_prompt`/`revise_prompt` override options; omitted daily times inside a present section disable the job; `poll_interval` must divide 24 h; `agent-ready` + `agent-blocked` counts as queued; host-observed GitHub rate limits classify as `network` | The spec named these behaviors without fixing the details; these are the conservative readings |
 | 2026-11-24 | Nightly image update in v1 (7.1), Claude Code from the signed apt repo | Keeps Claude Code current without changing it under a running job; a bad release is caught by the smoke test and the previous image stays one command away |
 | 2026-11-24 | GitHub App instead of a PAT (5.1) | Fine-grained PATs don't work for collaborators on another personal account's repos; app tokens are short-lived, nothing to renew yearly, PRs authored by `app[bot]` so the owner can approve them |

@@ -1,0 +1,49 @@
+# cargo-deny configuration. Run locally with `cargo deny check`.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # chrono, chrono-tz and humantime (time handling in singlelane-core) are unmaintained,
+  # with no fixed releases. Accepted until singlelane-core moves off them; see the SPEC
+  # Decision log. Remove these entries in that change.
+  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; replacement pending" },
+  { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained; replacement pending" },
+  { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained; replacement pending" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# Compatible with this project's MIT OR Apache-2.0 license.
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Zlib",
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# SPEC 4: TLS via rustls only, no OpenSSL.
+deny = [
+  { name = "openssl", reason = "SPEC 4: rustls only" },
+  { name = "openssl-sys", reason = "SPEC 4: rustls only" },
+  { name = "native-tls", reason = "SPEC 4: rustls only" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
