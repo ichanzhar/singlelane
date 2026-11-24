@@ -1,0 +1,46 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/singlelane-core",
+    "crates/singlelane-github",
+    "crates/singlelane-exec",
+    "crates/singlelane",
+    "crates/agent-runner",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ichanzhar/singlelane"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1.0.105"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+chrono-tz = "0.10.4"
+globset = "0.4.22"
+humantime = "2.4.0"
+regex = "1.13.2"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+toml = "1.2.2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
