@@ -108,7 +108,7 @@ impl Match for AppJwt {
         let Ok(bytes) = URL_SAFE_NO_PAD.decode(parts[1]) else {
             return false;
         };
-        serde_json::from_slice::<JwtClaims>(&bytes).is_ok_and(|c| c.iss == APP_ID)
+        serde_json::from_slice::<JwtClaims>(&bytes).is_ok_and(|c| c.iss == APP_ID.to_string())
     }
 }
 
@@ -749,7 +749,7 @@ async fn secondary_rate_limit_that_persists_is_a_rate_limit_error() {
     Mock::given(method("GET"))
         .and(path("/repos/owner/monorepo/issues/12"))
         .respond_with(secondary_limit(None))
-        .expect(3)
+        .expect(2)
         .mount(&env.server)
         .await;
     let err = env.gh.get_issue(&repo(), 12).await.unwrap_err();
@@ -759,11 +759,9 @@ async fn secondary_rate_limit_that_persists_is_a_rate_limit_error() {
         err.to_string().contains("RL:403"),
         "request id in the error: {err}"
     );
-    // No Retry-After: GitHub's guidance is to wait at least a minute.
-    assert_eq!(
-        env.sleeper.delays(),
-        vec![Duration::from_secs(60), Duration::from_secs(60)]
-    );
+    // No Retry-After: wait at least a minute, then back off exponentially (GitHub's
+    // guidance). The second wait (120 s) is above the 90 s cap, so the error is returned.
+    assert_eq!(env.sleeper.delays(), vec![Duration::from_secs(60)]);
 }
 
 #[tokio::test]

@@ -32,8 +32,8 @@ use crate::secret::Secret;
 
 /// The JWT's `iat` is set this far in the past to tolerate clock drift (GitHub's advice).
 pub const JWT_BACKDATE: Duration = Duration::from_secs(60);
-/// JWT lifetime after `now`. GitHub accepts at most 10 minutes from `iat`; 9 minutes after
-/// `now` is 10 minutes after the backdated `iat`.
+/// JWT lifetime after `now`. GitHub requires `exp` to be no more than 10 minutes in the
+/// future; 9 minutes leaves room for clock drift.
 pub const JWT_LIFETIME: Duration = Duration::from_secs(9 * 60);
 /// A cached installation token is replaced when less than this remains (SPEC 5.1).
 pub const REFRESH_MARGIN: Duration = Duration::from_secs(10 * 60);
@@ -82,8 +82,9 @@ pub struct JwtClaims {
     pub iat: i64,
     /// Expires (unix seconds), `now` + [`JWT_LIFETIME`].
     pub exp: i64,
-    /// The app id.
-    pub iss: u64,
+    /// The app id, as a string. GitHub accepts the app id or the client id here (it
+    /// recommends the client id); a JWT `iss` is a string by definition (RFC 7519).
+    pub iss: String,
 }
 
 impl JwtClaims {
@@ -94,7 +95,7 @@ impl JwtClaims {
         Self {
             iat: now.saturating_sub(secs(JWT_BACKDATE)),
             exp: now.saturating_add(secs(JWT_LIFETIME)),
-            iss: app_id,
+            iss: app_id.to_string(),
         }
     }
 }
@@ -305,7 +306,12 @@ pub(crate) mod tests {
         assert_eq!(header["alg"], "RS256");
         assert_eq!(header["typ"], "JWT");
         let claims: JwtClaims = serde_json::from_value(decode_part(parts[1])).unwrap();
-        assert_eq!(claims.iss, 123_456);
+        assert_eq!(claims.iss, "123456");
+        assert_eq!(
+            decode_part(parts[1])["iss"],
+            "123456",
+            "iss is a JSON string"
+        );
         assert_eq!(claims.iat, now.as_second() - 60);
         assert_eq!(claims.exp, now.as_second() + 540);
         // GitHub rejects JWTs that live longer than 10 minutes.

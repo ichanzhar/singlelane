@@ -286,6 +286,7 @@ impl Http {
             rate_limited,
             now,
             backoff(self.retry.base_delay, attempt),
+            backoff(RATE_LIMIT_FALLBACK, attempt),
         );
         Ok(Attempt::Failed { error, delay })
     }
@@ -298,6 +299,10 @@ enum Attempt {
         delay: Option<Duration>,
     },
 }
+
+/// First wait for a rate limit without `Retry-After` or reset headers (GitHub: "wait for at
+/// least one minute").
+const RATE_LIMIT_FALLBACK: Duration = Duration::from_secs(60);
 
 /// Methods that are safe to resend after a 5xx or a broken connection. A POST that failed
 /// with 5xx may have been applied (a comment or PR created twice), so it is only retried when
@@ -337,7 +342,8 @@ pub(crate) fn is_rate_limited(status: u16, headers: &HeaderMap, body: &str) -> b
 /// How long to wait before retrying a failed response, or `None` to give up.
 ///
 /// - Rate limits (any method): `Retry-After` seconds; else until `x-ratelimit-reset` when
-///   `x-ratelimit-remaining` is 0; else one minute (GitHub's guidance for secondary limits).
+///   `x-ratelimit-remaining` is 0; else `rate_limit_backoff` (one minute, doubled on every
+///   further attempt: GitHub's guidance for secondary limits).
 /// - 500, 502, 503, 504 on idempotent methods: `server_backoff` (exponential, computed by
 ///   the caller for this attempt).
 fn retry_delay(
@@ -347,6 +353,7 @@ fn retry_delay(
     rate_limited: bool,
     now_unix: i64,
     server_backoff: Duration,
+    rate_limit_backoff: Duration,
 ) -> Option<Duration> {
     if rate_limited {
         if let Some(secs) = header_str(headers, "retry-after").and_then(|v| v.parse::<u64>().ok()) {
@@ -359,7 +366,7 @@ fn retry_delay(
             let wait = u64::try_from(reset.saturating_sub(now_unix).max(0)).unwrap_or(0);
             return Some(Duration::from_secs(wait + 1));
         }
-        return Some(Duration::from_secs(60));
+        return Some(rate_limit_backoff);
     }
     if matches!(status, 500 | 502 | 503 | 504) && idempotent(method) {
         return Some(server_backoff);
@@ -459,11 +466,12 @@ mod tests {
     #[test]
     fn retry_delays() {
         let one = Duration::from_secs(1);
+        let min = Duration::from_secs(60);
         let get = Method::GET;
         let post = Method::POST;
         let h = headers(&[("retry-after", "7")]);
         assert_eq!(
-            retry_delay(&post, 403, &h, true, 0, one),
+            retry_delay(&post, 403, &h, true, 0, one, min),
             Some(Duration::from_secs(7))
         );
         let h = headers(&[
@@ -471,27 +479,31 @@ mod tests {
             ("x-ratelimit-reset", "1100"),
         ]);
         assert_eq!(
-            retry_delay(&get, 403, &h, true, 1000, one),
+            retry_delay(&get, 403, &h, true, 1000, one, min),
             Some(Duration::from_secs(101))
         );
         assert_eq!(
-            retry_delay(&get, 403, &HeaderMap::new(), true, 0, one),
+            retry_delay(&get, 403, &HeaderMap::new(), true, 0, one, min),
             Some(Duration::from_secs(60))
         );
         assert_eq!(
-            retry_delay(&get, 502, &HeaderMap::new(), false, 0, one),
+            retry_delay(&get, 429, &HeaderMap::new(), true, 0, one, backoff(min, 2)),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(
+            retry_delay(&get, 502, &HeaderMap::new(), false, 0, one, min),
             Some(Duration::from_secs(1))
         );
         assert_eq!(
-            retry_delay(&post, 502, &HeaderMap::new(), false, 0, one),
+            retry_delay(&post, 502, &HeaderMap::new(), false, 0, one, min),
             None
         );
         assert_eq!(
-            retry_delay(&get, 404, &HeaderMap::new(), false, 0, one),
+            retry_delay(&get, 404, &HeaderMap::new(), false, 0, one, min),
             None
         );
         assert_eq!(
-            retry_delay(&get, 401, &HeaderMap::new(), false, 0, one),
+            retry_delay(&get, 401, &HeaderMap::new(), false, 0, one, min),
             None
         );
     }
