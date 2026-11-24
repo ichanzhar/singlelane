@@ -1,0 +1,11 @@
+{
+  "token": "{{TOKEN}}",
+  "expires_at": "{{EXPIRES_AT}}",
+  "permissions": {
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write"
+  },
+  "repository_selection": "selected"
+}

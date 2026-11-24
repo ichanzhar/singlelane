@@ -1,0 +1,24 @@
+{
+  "total_count": 2,
+  "repository_selection": "selected",
+  "repositories": [
+    {
+      "id": 2001,
+      "node_id": "R_kgDOAAAAAA",
+      "name": "monorepo",
+      "full_name": "owner/monorepo",
+      "private": true,
+      "owner": { "login": "owner", "id": 1000, "type": "User" },
+      "default_branch": "main"
+    },
+    {
+      "id": 2002,
+      "node_id": "R_kgDOAAAAAB",
+      "name": "Other.Repo",
+      "full_name": "owner/Other.Repo",
+      "private": true,
+      "owner": { "login": "owner", "id": 1000, "type": "User" },
+      "default_branch": "main"
+    }
+  ]
+}

@@ -17,7 +17,24 @@ repository = "https://github.com/ichanzhar/singlelane"
 publish = false
 
 [workspace.dependencies]
+singlelane-core = { path = "crates/singlelane-core" }
+singlelane-github = { path = "crates/singlelane-github" }
 anyhow = "1.0.105"
+async-trait = "0.1.92"
+base64 = "0.22.1"
+clap = { version = "4.6.9", features = ["derive"] }
+http = "1.5.0"
+# rustls only (SPEC 4). No built-in app auth (jwt features): singlelane signs its own JWT and
+# manages installation tokens, and does its own retries (retry feature off).
+octocrab = { version = "0.54.9", default-features = false, features = ["rustls", "rustls-ring", "default-client", "follow-redirect", "timeout"] }
+ring = "0.17.14"
+rustls-pki-types = { version = "1.13.0", features = ["std"] }
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+wiremock = "0.6.5"
 globset = "0.4.22"
 # No system tz lookups: the tz database is bundled, so singlelane-core never reads the filesystem.
 jiff = { version = "1.0.2", default-features = false, features = ["std", "tz-fat", "tzdb-bundle-always", "perf-inline"] }
