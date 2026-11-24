@@ -5,7 +5,7 @@ G1  Trusted input only
 G3  Never merge, never approve                  (GitHub API surface; push rules in phase 4)
 G4  Protected paths
 G5  Single claim                                (claim race; host lock file in phase 5)
-G8  No secret leakage
+G8  No secret leakage                           (also agent-runner: the Claude credential in container output)
 G9  Working hours
 G10 One task in flight
 # G2 No GitHub credentials in the agent stack   (phase 4)

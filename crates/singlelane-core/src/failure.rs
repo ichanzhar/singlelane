@@ -16,6 +16,8 @@ use std::sync::LazyLock;
 use jiff::Timestamp;
 use regex::Regex;
 
+use crate::agent_out::FailureReport;
+
 /// The failure classes of SPEC 6.8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FailureClass {
@@ -158,6 +160,56 @@ pub struct AgentReport {
     pub result_message: Option<String>,
     /// Last lines of Claude Code's stderr.
     pub stderr_tail: String,
+    /// HTTP status of the Anthropic API error that ended the run, if any.
+    pub api_error_status: Option<u16>,
+    /// Claude Code's error category for that API error (`authentication_failed`,
+    /// `rate_limit`, ...).
+    pub error_category: Option<String>,
+    /// When a rejected usage limit resets (Unix seconds), if Claude Code reported it.
+    pub rate_limit_resets_at: Option<i64>,
+}
+
+/// Error categories (Claude Code's `SDKAssistantMessageError`) that mean the credential or the
+/// account behind it needs the owner: re-authenticate, or fix billing.
+const AUTH_CATEGORIES: [&str; 4] = [
+    "authentication_failed",
+    "oauth_org_not_allowed",
+    "account_on_hold",
+    "billing_error",
+];
+
+/// The error category of a usage or rate limit.
+const RATE_LIMIT_CATEGORY: &str = "rate_limit";
+
+impl AgentReport {
+    /// The classifier's view of `failure.json`. `exit_code` is Claude Code's exit code; the
+    /// host may replace it with the container's.
+    pub fn from_failure_report(report: &FailureReport) -> Self {
+        let mut message = report.result_message.clone().unwrap_or_default();
+        for extra in [
+            report.api_error_type.as_deref(),
+            report.startup_failure_reason.as_deref(),
+            report.setup_error.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !message.is_empty() {
+                message.push('\n');
+            }
+            message.push_str(extra);
+        }
+        Self {
+            exit_code: report.exit_code,
+            timed_out: report.timed_out,
+            result_subtype: report.result_subtype.clone(),
+            result_message: (!message.is_empty()).then_some(message),
+            stderr_tail: report.stderr_tail.join("\n"),
+            api_error_status: report.api_error_status,
+            error_category: report.error_category.clone(),
+            rate_limit_resets_at: report.rate_limit_resets_at,
+        }
+    }
 }
 
 /// Everything the classifier looks at.
@@ -213,10 +265,10 @@ struct Patterns {
 
 static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     claude_auth: re(
-        r"(?i)invalid api key|invalid x-api-key|authentication_error|oauth token (?:has )?expired|token has expired|invalid bearer token|please run /login|not logged in|credit balance is too low|oauth_org_not_allowed|permission_error",
+        r"(?i)invalid api key|invalid x-api-key|authentication_error|authentication_failed|failed to authenticate|oauth token (?:has )?(?:expired|revoked)|oauth token revoked|oauth session expired|token has expired|invalid bearer token|invalid authentication credentials|please run /login|not logged in|login expired|credit balance (?:is )?too low|oauth_org_not_allowed|permission_error|account is on hold|organization has been disabled",
     ),
     usage_limit: re(
-        r"(?i)usage limit|rate_limit_error|rate limit reached|limit will reset|too many requests",
+        r"(?i)usage limit|rate_limit_error|rate limit reached|limit will reset|too many requests|you've hit your [a-z0-9 ]*limit|spend limit reached|request rejected \(429\)",
     ),
     usage_reset_epoch: re(r"(?i)limit reached\|(\d{9,11})"),
     github_rate_limit: re(r"(?i)rate limit|abuse detection|secondary rate"),
@@ -282,21 +334,46 @@ pub fn classify(input: &FailureInput) -> Classification {
         return verdict(FailureClass::Infra, "disk full".to_string());
     }
 
-    // Claude auth and usage limits, from the agent's own report.
+    // Claude auth and usage limits, from the agent's own report: Claude Code's structured
+    // error category and API status first, its messages second.
     if source == Some(ErrorSource::Agent) || agent.is_some() {
-        if matches(&p.claude_auth, &claude_text) {
+        let category = agent.and_then(|a| a.error_category.as_deref());
+        let api_status = agent.and_then(|a| a.api_error_status);
+        if category.is_some_and(|c| AUTH_CATEGORIES.contains(&c))
+            || matches!(api_status, Some(401 | 403))
+            || matches(&p.claude_auth, &claude_text)
+        {
+            let detail = short(
+                agent
+                    .and_then(|a| a.result_message.as_deref())
+                    .unwrap_or(""),
+            );
+            let detail = if detail.is_empty() {
+                category
+                    .map(str::to_string)
+                    .or_else(|| api_status.map(|s| format!("HTTP {s}")))
+                    .unwrap_or_else(|| short(&claude_text))
+            } else {
+                detail
+            };
             return verdict(
                 FailureClass::ClaudeAuth,
-                format!("Claude Code authentication failed: {}", short(&claude_text)),
+                format!("Claude Code authentication failed: {detail}"),
             );
         }
-        if matches(&p.usage_limit, &claude_text) {
-            let resets_at = p
-                .usage_reset_epoch
-                .as_ref()
-                .and_then(|r| r.captures(&claude_text))
-                .and_then(|c| c.get(1))
-                .and_then(|m| m.as_str().parse::<i64>().ok())
+        if category == Some(RATE_LIMIT_CATEGORY)
+            || api_status == Some(429)
+            || matches(&p.usage_limit, &claude_text)
+        {
+            let resets_at = agent
+                .and_then(|a| a.rate_limit_resets_at)
+                .or_else(|| {
+                    p.usage_reset_epoch
+                        .as_ref()
+                        .and_then(|r| r.captures(&claude_text))
+                        .and_then(|c| c.get(1))
+                        .and_then(|m| m.as_str().parse::<i64>().ok())
+                })
                 .and_then(|secs| Timestamp::from_second(secs).ok())
                 .filter(|t| input.now.is_none_or(|now| *t > now));
             return Classification {
@@ -483,6 +560,161 @@ mod tests {
         let c = classify(&i);
         assert_eq!(c.class, FailureClass::ClaudeUsageLimit);
         assert_eq!(c.resets_at, Timestamp::from_second(1_795_600_800).ok());
+    }
+
+    // Messages as documented for headless mode (`claude -p`) in the Claude Code error
+    // reference, https://code.claude.com/docs/en/errors (checked 2026-11-24). The first two
+    // were also observed with Claude Code 2.1.331.
+    #[test]
+    fn fixture_claude_auth_documented_headless_messages() {
+        for message in [
+            "Invalid API key · Fix external API key",
+            "Not logged in · Please run /login",
+            "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.",
+            "Failed to authenticate. API Error: 401 OAuth token has expired ...",
+            "Failed to authenticate: OAuth session expired and could not be refreshed",
+            "Please run /login · API Error: 401 Invalid authentication credentials",
+            "Login expired · Please run /login",
+            "Credit balance too low · Add funds: https://platform.claude.com/settings/billing",
+        ] {
+            let i = agent(message, "");
+            assert_eq!(classify(&i).class, FailureClass::ClaudeAuth, "{message}");
+        }
+    }
+
+    #[test]
+    fn fixture_claude_auth_from_structured_facts_only() {
+        // No recognizable text at all: the category or the API status decides.
+        for (category, status) in [
+            (Some("authentication_failed"), None),
+            (Some("oauth_org_not_allowed"), None),
+            (Some("account_on_hold"), None),
+            (Some("billing_error"), None),
+            (None, Some(401)),
+            (None, Some(403)),
+        ] {
+            let mut i = agent("something went wrong", "");
+            if let Some(a) = i.agent.as_mut() {
+                a.error_category = category.map(str::to_string);
+                a.api_error_status = status;
+            }
+            let c = classify(&i);
+            assert_eq!(c.class, FailureClass::ClaudeAuth, "{category:?} {status:?}");
+            assert!(c.reason.contains("something went wrong"), "{}", c.reason);
+        }
+    }
+
+    #[test]
+    fn fixture_claude_usage_limit_documented_messages() {
+        for message in [
+            "You've hit your session limit · resets 3:45pm",
+            "You've hit your weekly limit · resets Mon 12:00am",
+            "You've hit your Opus limit · resets 3:45pm",
+            "API Error: Request rejected (429) · this may be a temporary capacity issue. If it persists, check https://status.claude.com.",
+            "Spend limit reached",
+        ] {
+            let i = agent(message, "");
+            let c = classify(&i);
+            assert_eq!(c.class, FailureClass::ClaudeUsageLimit, "{message}");
+            // A wall-clock reset time without a date or zone is not guessed at.
+            assert_eq!(c.resets_at, None, "{message}");
+        }
+    }
+
+    #[test]
+    fn fixture_claude_usage_limit_reset_time_from_rate_limit_event() {
+        let mut i = agent("You've hit your session limit · resets 3:45pm", "");
+        i.now = Timestamp::from_second(1_795_590_000).ok();
+        if let Some(a) = i.agent.as_mut() {
+            a.error_category = Some("rate_limit".into());
+            a.api_error_status = Some(429);
+            a.rate_limit_resets_at = Some(1_795_600_800);
+        }
+        let c = classify(&i);
+        assert_eq!(c.class, FailureClass::ClaudeUsageLimit);
+        assert_eq!(c.resets_at, Timestamp::from_second(1_795_600_800).ok());
+
+        // A reset time in the past is dropped (the pause falls back to 1 h).
+        i.now = Timestamp::from_second(1_795_700_000).ok();
+        assert_eq!(classify(&i).resets_at, None);
+    }
+
+    #[test]
+    fn fixture_claude_usage_limit_from_structured_facts_only() {
+        for (category, status) in [(Some("rate_limit"), None), (None, Some(429))] {
+            let mut i = agent("", "");
+            if let Some(a) = i.agent.as_mut() {
+                a.error_category = category.map(str::to_string);
+                a.api_error_status = status;
+            }
+            assert_eq!(
+                classify(&i).class,
+                FailureClass::ClaudeUsageLimit,
+                "{category:?} {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_api_errors_are_not_auth_or_usage_limits() {
+        // 529 overloaded and 500 server errors: the agent failed, nothing to re-authenticate
+        // and no quota to wait for.
+        for (category, status) in [
+            (Some("overloaded"), Some(529)),
+            (Some("server_error"), Some(500)),
+            (Some("unknown"), None),
+        ] {
+            let mut i = agent("API Error: 500 Internal server error", "");
+            if let Some(a) = i.agent.as_mut() {
+                a.error_category = category.map(str::to_string);
+                a.api_error_status = status;
+            }
+            assert_eq!(
+                classify(&i).class,
+                FailureClass::AgentFailed,
+                "{category:?} {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_report_is_built_from_failure_json() {
+        let report = FailureReport {
+            reason: "Claude Code exited with code 1".into(),
+            exit_code: Some(1),
+            result_subtype: Some("success".into()),
+            result_is_error: Some(true),
+            result_message: Some("Invalid API key · Fix external API key".into()),
+            api_error_status: Some(401),
+            api_error_type: Some("authentication_error".into()),
+            error_category: Some("authentication_failed".into()),
+            stderr_tail: vec!["line 1".into(), "line 2".into()],
+            ..FailureReport::default()
+        };
+        let a = AgentReport::from_failure_report(&report);
+        assert_eq!(a.exit_code, Some(1));
+        assert_eq!(a.result_subtype.as_deref(), Some("success"));
+        assert_eq!(a.stderr_tail, "line 1\nline 2");
+        assert_eq!(a.api_error_status, Some(401));
+        assert_eq!(a.error_category.as_deref(), Some("authentication_failed"));
+        let message = a.result_message.clone().unwrap_or_default();
+        assert!(message.contains("Invalid API key"));
+        assert!(message.contains("authentication_error"));
+
+        let i = FailureInput {
+            source: Some(ErrorSource::Agent),
+            agent: Some(a),
+            ..FailureInput::default()
+        };
+        assert_eq!(classify(&i).class, FailureClass::ClaudeAuth);
+
+        let timeout = FailureReport {
+            timed_out: true,
+            ..FailureReport::default()
+        };
+        let a = AgentReport::from_failure_report(&timeout);
+        assert!(a.timed_out);
+        assert_eq!(a.result_message, None);
     }
 
     #[test]

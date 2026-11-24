@@ -349,8 +349,16 @@ tail; output: the class) with a fixture test for every row.
 
 Rules:
 - The exact Claude Code auth and usage-limit error messages and result-event fields must be
-  checked against the current docs and real runs, and kept as fixtures. Unknown errors fall
+  checked against the current docs and real runs, and kept as fixtures
+  (`crates/agent-runner/tests/fixtures/`, with a note per file on whether it was observed or
+  built from the docs). Unknown errors fall
   back to `agent_failed`, never to `network`, so a wrong guess can't hide a real failure.
+- Claude Code's structured facts come first, its messages second: the error category
+  (`authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `billing_error` are
+  `claude_auth`; `rate_limit` is `claude_usage_limit`), the API status (401 and 403 are
+  `claude_auth`, 429 is `claude_usage_limit`) and, for the reset time, the `rate_limit_event`.
+  The result event's `subtype` is not a signal: an API failure ends with `subtype: "success"`
+  and `is_error: true`.
 - `failure.json` is written inside the agent container, so a compromised agent could forge it.
   The host confirms `network` itself: it probes GitHub and Anthropic from the host, and only
   accepts `network` if a probe fails. As a backstop, an item requeued as `network` more than
@@ -363,39 +371,84 @@ Rules:
 
 ## 7. agent-runner (inside the container)
 
-- Set the git identity from env and `safe.directory=/work`.
+- Set the git identity from env (`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`) and
+  `safe.directory=/work`.
 - Run `claude -p <prompt.md> --dangerously-skip-permissions --model <m> --max-turns <n>
-  --output-format stream-json --verbose` in `/work`, in its own process group.
+  --output-format stream-json --verbose` in `/work`, in its own process group, with stdin
+  closed (Claude Code otherwise waits for piped input) and
+  `CLAUDE_CODE_STARTUP_FAILURE_RESULTS=1` (a refusal to start then arrives as a result event).
+  Model, turns and timeout come from `CLAUDE_MODEL`, `MAX_TURNS` and `JOB_TIMEOUT`.
 - Enforce `JOB_TIMEOUT`: on expiry send SIGTERM to the group, then SIGKILL after 60 s.
-- Stream stdout to the container log and to `/out/transcript.jsonl`.
-- Parse the final `result` event into `/out/result.json` (turns, cost, duration, subtype).
+  agent-runner handles SIGTERM and SIGINT the same way (it is PID 1 in the container, where
+  an unhandled signal is ignored), so `docker stop` also ends with a status file.
+- Stream stdout to the container log and to `/out/transcript.jsonl`. Both, and Claude Code's
+  stderr, are redacted first (G8): the agent can print its own credential, for example with
+  `env`. Events are redacted string by string, so the lines stay valid JSON.
+- Parse the final `result` event into `/out/result.json` (turns, cost, duration, subtype,
+  `is_error`, `terminal_reason`, Claude Code version, model, wall-clock time, timed out or not,
+  Claude Code's exit code).
   Check the real field names against an actual run, tolerate missing fields, and never fail
-  the job because of a parse problem.
-- If Claude exits without writing `/out/status`, write `failed` and a reason to
-  `/out/failure.txt`.
-- Exit code: 0 for done or blocked, non-zero for failed.
-- For failure classification on the host (6.8), also write `/out/failure.json` when Claude
-  fails: exit code, the result event's error subtype and message if present, and the last
-  50 lines of stderr (redacted). The runner reports the raw facts; the host classifies.
+  the job because of a parse problem. `result.json` is written for every run, with only the
+  measured fields when there was no result event. With several result events (a follow-up turn
+  after background work), turns and durations are summed and the cost, which is cumulative,
+  is taken from the last one.
+- The status file is the agent's verdict: `done` or `blocked` (surrounding whitespace and
+  letter case ignored) stand, also when Claude Code is stopped by the timeout afterwards or
+  exits non-zero (it can sit waiting for a dev server it started). Files left in `/out` by an
+  earlier run are removed at the start, so a stale `done` never counts.
+- If Claude exits without writing `/out/status`, or writes anything else, write `failed` and a
+  one-line reason to `/out/failure.txt`.
+- Exit code: 0 for done or blocked, non-zero for failed: 1 failed, 124 failed by the job
+  timeout, 2 Claude Code could not be started (bad environment, unreadable prompt, git setup,
+  missing `claude`). In every case the status file is written.
+- For failure classification on the host (6.8), also write `/out/failure.json` when the run
+  fails: the reason, Claude Code's exit code or signal, timed out or told to stop, the setup
+  error if Claude Code never ran, the result event's subtype, `is_error`, error message,
+  `terminal_reason` and `startup_failure_reason`, the API error status and type, Claude Code's
+  error category, the reset time of a rejected usage limit, and the last
+  50 lines of stderr (redacted). The runner reports the raw facts; the host classifies. The
+  shapes of `result.json` and `failure.json` are defined once, in `singlelane-core`
+  (`agent_out`), and tolerate missing and unknown fields because image and host are updated
+  separately.
+- `agent-runner --version` prints the version. `agent-runner --smoke-test` checks the image
+  without calling the Claude API: `claude --version`, `~/.claude/settings.json` with its deny
+  rules, the subagents, the user-scoped Playwright MCP entry (chromium, headless, isolated),
+  and that Chromium launches headless, by starting the configured MCP server and having it
+  open a page. It prints one PASS or FAIL line per check and a JSON report as the last line
+  (with the Claude Code version), and exits non-zero on any failure.
 
-Agent image (`image/Dockerfile`), multi-stage:
-- Builder stage compiles `agent-runner` for the image's libc (or musl static).
-- Runtime: `eclipse-temurin:21-jdk-noble`, Node 22, git, jq, ripgrep, Playwright Chromium
-  (`npx playwright install --with-deps chromium`), non-root user `agent` with uid 1000,
+Agent image (`image/Dockerfile`), multi-stage. The build context is the repository root
+(`docker buildx build -f image/Dockerfile .`), cut down by `image/Dockerfile.dockerignore`:
+- Builder stage compiles `agent-runner` for the image's libc (or musl static): Debian bookworm,
+  whose glibc is older than the runtime's.
+- Runtime: `eclipse-temurin:21-jdk-noble`, Node 22 (copied from the official `node:22` image),
+  git, jq, ripgrep, Playwright Chromium, non-root user `agent` with uid 1000,
   `DISABLE_AUTOUPDATER=1`.
+- Chromium is installed by the Playwright bundled with the pinned Playwright MCP server
+  (`playwright-mcp install-browser --with-deps --no-shell chromium`), not by
+  `npx playwright install`: the MCP server only finds the Chromium revision of its own
+  Playwright. `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`.
 - Claude Code from Anthropic's signed apt repository (`downloads.claude.ai/claude-code/apt/`),
   not `curl | bash`. The build verifies the signing key fingerprint
   `31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE` and fails if it differs. Build args:
   `CLAUDE_CHANNEL` (`stable` or `latest`) and `CLAUDE_CACHE_BUST`, placed right before the
   Claude Code install step so a nightly rebuild only redoes that step and the ones after it.
   Check the current Claude Code setup docs for the exact repository lines.
-- Labels on the image: Claude Code version, build date, singlelane version.
-- Playwright MCP configured at user scope for Claude Code with browser `chromium`, headless,
+- Labels on the image: Claude Code version, build date, singlelane version (build args
+  `CLAUDE_CODE_VERSION`, `BUILD_DATE`, `SINGLELANE_VERSION`), plus the channel and the
+  Playwright MCP version. The Claude Code version is only known after the install step, so the
+  label is set by building a second time with `CLAUDE_CODE_VERSION` from the smoke test; that
+  build is fully cached and only rewrites the labels.
+- Playwright MCP configured at user scope for Claude Code (`claude mcp add --scope user`,
+  stored in `~/.claude.json`) with browser `chromium`, headless,
   isolated. Google Chrome is not available on arm64, and Playwright MCP defaults to the
-  Chrome channel. Check the current Claude Code docs for how user-scoped MCP servers are
-  configured.
+  Chrome channel. Further options: `--no-sandbox` (the container drops all capabilities),
+  `--allow-unrestricted-file-access` (without it the server refuses to write screenshots to
+  `/out/screenshots`, outside `/work`) and `--output-dir /tmp/playwright-mcp` (without it
+  auto-named snapshots land in `/work/.playwright-mcp/`, inside the checkout).
 - Copy `assets/settings.json` to `~/.claude/settings.json` and `assets/agents/*` to
   `~/.claude/agents/`.
+- Entrypoint: `agent-runner`, without default arguments.
 
 ### 7.1 Nightly image update
 
@@ -404,10 +457,14 @@ Agent image (`image/Dockerfile`), multi-stage:
 1. Skip if a job is running (never swap the image under a running job). `--force` does not
    override this.
 2. Build `<image>:candidate` with `--pull` and `CLAUDE_CACHE_BUST` set to the current date, and
-   `CLAUDE_CHANNEL` from config.
+   `CLAUDE_CHANNEL` from config. The Dockerfile is `<image.dockerfile_dir>/Dockerfile` and the
+   build context is the parent of `dockerfile_dir` (a checkout of this repository).
 3. Smoke test the candidate in a throwaway container: `claude --version`, `agent-runner --version`,
-   Playwright Chromium launches headless, the Playwright MCP config is present, and, if
+   Playwright Chromium launches headless, the Playwright MCP config is present
+   (`agent-runner --smoke-test`, section 7), and, if
    `image.probe_claude = true`, a one-turn Claude prompt (proves auth, costs a few tokens).
+   Then build once more with `CLAUDE_CODE_VERSION` from the smoke test to set the label
+   (cached, section 7).
 4. Pass: tag the current image `<image>:previous`, the candidate `<image>:latest`; record the
    versions in the history store. Fail: keep the current image, delete the candidate.
 5. Prune dangling images and build cache older than 7 days so the disk doesn't fill up.
@@ -518,8 +575,9 @@ that leaves the process.
 
 - Cargo workspace with the crates above. `cargo fmt --check`,
   `cargo clippy --all-targets -- -D warnings` and `cargo test` all pass.
-- `image/Dockerfile` and the assets it copies; the install docs put `image/` at
-  `/opt/singlelane/image` (the default `image.dockerfile_dir`).
+- `image/Dockerfile` and the assets it copies; the install docs put a checkout of this
+  repository at `/opt/singlelane`, so that `image/` is at `/opt/singlelane/image` (the default
+  `image.dockerfile_dir`) and the build context is `/opt/singlelane`.
 - `deploy/singlelane.service`: systemd unit for `singlelane run` (`User=singlelane`,
   `EnvironmentFile=/etc/singlelane/secrets.env`, `Restart=on-failure`,
   `TimeoutStopSec` greater than `shutdown_grace`).
@@ -544,6 +602,9 @@ commands beyond /status /pause /resume.
 
 | Date | Decision | Why |
 |---|---|---|
+| 2026-11-24 | agent-runner (7): the agent's `done` or `blocked` stands even if Claude Code is stopped by the timeout or exits non-zero afterwards; stale files in `/out` are removed first; exit codes 1 (failed), 124 (timeout), 2 (could not start); stdout, stderr and the transcript are redacted in the container; SIGTERM and SIGINT are handled; `result.json` and `failure.json` carry more fields and their shapes live in `singlelane-core` | Checked against the Claude Code docs and real output of 2.1.331. `claude -p` can stay open after the last turn while a background command the agent started (a dev server) is still running, so a finished job would otherwise end as a timeout. An API failure ends with `subtype: "success"`, `is_error: true` and exit code 1, so the subtype cannot carry the classification: the error category, API status and `rate_limit_event` do. The agent can print its own credential, and the container log is outside singlelane's files |
+| 2026-11-24 | Agent image (7): build context is the repository root, and `image.dockerfile_dir` holds the Dockerfile with the context one level up; Node 22 is copied from the official `node:22` image; Chromium is installed by the Playwright bundled with a pinned `@playwright/mcp`, not by `npx playwright install`; the MCP server also gets `--no-sandbox`, `--allow-unrestricted-file-access` and `--output-dir`; the Claude Code version label is set by a second, cached build | The builder stage needs the Cargo workspace, which is not in `image/`. The reference image set up Node with `curl \| bash` from a third-party repository. Tested with `@playwright/mcp` 0.0.86: it only launches the Chromium revision of its own Playwright, refuses screenshot paths outside the working directory, and drops auto-named snapshots into `.playwright-mcp/` in the checkout. A label cannot be computed from a build step, and the version is only known after the install |
+| 2026-11-24 | Failure classification (6.8) reads Claude Code's error category, API status and `rate_limit_event` reset time before matching message text; message patterns extended to the current headless messages (`Failed to authenticate...`, `You've hit your session limit...`) | The current error reference and real output: the documented headless messages did not all match the phase 1 patterns, and the old `limit reached\|<epoch>` reset format is no longer what Claude Code prints (it prints a wall-clock time; the epoch is in the `rate_limit_event`) |
 | 2026-11-24 | The GitHub client is reqwest (rustls, ring provider) instead of octocrab, and sends REST API version `2026-03-10`. This supersedes the octocrab parts of the two rows below; JWT signing with ring, own retries and pagination stay | singlelane used none of octocrab's typed API, only its raw request path, which always appends `X-GitHub-Api-Version: 2022-11-28` and `User-Agent: octocrab`. reqwest gives full header control, drops `Authorization` on cross-host redirects, removes about 20 crates from the tree, and is the HTTPS client phase 5 needs for Telegram anyway. The typed alternatives are stale (octorust last released 2025-03, roctogen 2025-08) and ureq is blocking. `cargo deny` now checks the two shipped Linux targets only |
 | 2026-11-24 | Checked against current GitHub docs: JWT `iss` sent as a string; header-less secondary rate limits back off exponentially from 60 s; `ghs_` redaction widened to the stateless installation token format; API version stays `2022-11-28` (octocrab's) | GitHub's JWT, rate-limit, token-format and API-version docs; the stateless token format (rollout from 2026-04-27) would otherwise have slipped past the `ghs_` pattern |
 | 2026-11-24 | The app JWT is signed with `ring` (already in the tree through rustls) instead of `jsonwebtoken` or octocrab's `jwt` features; octocrab is built without its auth and retry layers, and singlelane sets the `Authorization` header, retries and paginates itself (5.1) | `ring` already does RS256 signing for rustls, so no second RSA implementation (`jsonwebtoken` needs either the pure-Rust `rsa` stack or `aws-lc-rs` with its C build); the JWT itself is three base64url parts. singlelane needs the raw installation token for git and `gh` anyway, and octocrab's retry layer retries 5xx immediately for every method including POST (duplicate comments or PRs), never caps a rate-limit wait, and can't take a test clock |

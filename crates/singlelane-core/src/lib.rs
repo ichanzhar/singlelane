@@ -5,6 +5,7 @@
 //! the current time) and get decisions back.
 //!
 //! Modules:
+//! - [`agent_out`]: the files the agent container leaves in `/out` (SPEC 6.6, 7).
 //! - [`config`]: config types, TOML parsing and startup validation (SPEC 5).
 //! - [`repo`]: repository names and item references.
 //! - [`state`]: labels, item states and the transition table (SPEC 3).
@@ -16,6 +17,7 @@
 //! - [`notify`]: Telegram message formatting (SPEC 11).
 //! - [`doctor`]: `doctor` check results and output format (SPEC 9).
 
+pub mod agent_out;
 pub mod config;
 pub mod doctor;
 pub mod failure;

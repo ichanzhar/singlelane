@@ -7,8 +7,19 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+description = "Runs inside the agent container: drives Claude Code headless and reports the outcome"
+
 [dependencies]
+singlelane-core.workspace = true
 anyhow.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+signal-hook.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
