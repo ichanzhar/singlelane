@@ -103,6 +103,9 @@ Rules:
 - An `agent-revise` label on any PR other than the in-flight task's PR is ignored and
   reported once in the daily summary.
 - Revise jobs only run on PRs whose head branch starts with `agent/`.
+- An issue carrying both `agent-ready` and `agent-blocked` counts as queued, not blocked: the
+  owner answered and requeued it without removing `agent-blocked`. The claim removes both.
+  Any other combination of two workflow labels counts as in flight and is reported.
 
 Model the transitions as a pure state machine in `singlelane-core` with exhaustive unit tests.
 
@@ -178,6 +181,8 @@ cpus = 3.5
 shm_size = "1g"
 max_screenshots = 10
 max_screenshot_bytes = 10_000_000
+# implement_prompt = "/etc/singlelane/prompts/implement.md"  # optional template overrides (6.4)
+# revise_prompt = "/etc/singlelane/prompts/revise.md"
 
 [[repo]]
 name = "owner/monorepo"
@@ -194,6 +199,10 @@ protected_paths = [".github/workflows/**", ".github/actions/**", "CODEOWNERS", "
 
 Validation at startup: time zone exists, `start < end`, repo names are
 `owner/name`, globs compile, durations parse, `data_dir` is writable.
+`poll_interval` must be whole minutes and divide 24 h. Unknown keys are errors. An omitted
+`[image]` or `[telegram]` section gets the defaults shown above (`update_at = "03:00"`,
+`daily_summary_at = "21:00"`); inside a present section, omitting `update_at` or
+`daily_summary_at` disables that job. An omitted `protected_paths` gets the four defaults above.
 
 ### 5.1 GitHub App
 
@@ -245,8 +254,8 @@ set is not as expected. Record the attempt in the history store. If attempts exc
   reference script: title, body, owner comments; for revise also review summaries and inline
   comments as `- path:line: body`).
 - `task/prompt.md`: rendered from `assets/agent-prompts/implement.md` or `revise.md`,
-  replacing `{{NUM}}` and `{{BRANCH}}`. Templates are embedded with `include_str!`, and a
-  config option can override them with files.
+  replacing `{{NUM}}` and `{{BRANCH}}`. Templates are embedded with `include_str!`, and
+  `agent.implement_prompt` / `agent.revise_prompt` can override them with files.
 
 ### 6.5 Agent stack (docker compose)
 Render a compose file per job into the workspace. Project name `singlelane-<short-id>`.
@@ -316,6 +325,8 @@ Rules:
   The host confirms `network` itself: it probes GitHub and Anthropic from the host, and only
   accepts `network` if a probe fails. As a backstop, an item requeued as `network` more than
   5 times in 24 h becomes `agent_failed`.
+- A GitHub rate limit seen by the host (HTTP 429, or 403 with a rate-limit message) is
+  classified `network` without a probe: the host observed it directly, so it can't be forged.
 - A pause caused by `claude_auth`, `github_auth` or `infra` is cleared only by `resume`
   (CLI or Telegram). Resume first re-runs the matching `doctor` check (for `claude_auth`,
   the `--with-claude` probe) and refuses with the reason if it still fails.
@@ -502,6 +513,8 @@ commands beyond /status /pause /resume.
 
 | Date | Decision | Why |
 |---|---|---|
+| 2026-11-24 | CI builds the aarch64 binaries on GitHub's native ARM runner (`ubuntu-22.04-arm`) instead of `cross`; `cargo-deny` enforces the rustls-only rule; the chrono, chrono-tz and humantime "unmaintained" advisories are ignored until core moves off them | Native builds are simpler and also run the tests on aarch64; 22.04's glibc 2.35 keeps the binary runnable on Raspberry Pi OS bookworm |
+| 2026-11-24 | Phase 1 fills gaps: `agent.implement_prompt`/`revise_prompt` override options; omitted daily times inside a present section disable the job; `poll_interval` must divide 24 h; `agent-ready` + `agent-blocked` counts as queued; host-observed GitHub rate limits classify as `network` | The spec named these behaviors without fixing the details; these are the conservative readings |
 | 2026-11-24 | Nightly image update in v1 (7.1), Claude Code from the signed apt repo | Keeps Claude Code current without changing it under a running job; a bad release is caught by the smoke test and the previous image stays one command away |
 | 2026-11-24 | GitHub App instead of a PAT (5.1) | Fine-grained PATs don't work for collaborators on another personal account's repos; app tokens are short-lived, nothing to renew yearly, PRs authored by `app[bot]` so the owner can approve them |
 | 2026-11-23 | Exactly one task in flight until its PR is merged, not configurable (G10). No `drain` option. | Personal project, low volume, keeps subscription usage ordinary and individual, and the full stack (backend, two Next.js apps, Chromium, Postgres) needs most of the Pi's 16 GB |
