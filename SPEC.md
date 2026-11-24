@@ -199,6 +199,7 @@ protected_paths = [".github/workflows/**", ".github/actions/**", "CODEOWNERS", "
 
 Validation at startup: time zone exists, `start < end`, repo names are
 `owner/name`, globs compile, durations parse, `data_dir` is writable.
+Durations use the friendly format (`15m`, `90m`, `2h`, `1h30m`, `3d`; a day is 24 h).
 `poll_interval` must be whole minutes and divide 24 h. Unknown keys are errors. An omitted
 `[image]` or `[telegram]` section gets the defaults shown above (`update_at = "03:00"`,
 `daily_summary_at = "21:00"`); inside a present section, omitting `update_at` or
@@ -513,6 +514,7 @@ commands beyond /status /pause /resume.
 
 | Date | Decision | Why |
 |---|---|---|
+| 2026-11-24 | Time handling uses `jiff` with its bundled tz database instead of chrono, chrono-tz and humantime; the cargo-deny ignores for them are removed | All three were declared unmaintained (RUSTSEC-2026-0542/0543/0555); stale tz rules would break G9. The bundled database keeps `singlelane-core` free of filesystem reads, and tz updates arrive as `jiff-tzdb` releases through Dependabot |
 | 2026-11-24 | CI builds the aarch64 binaries on GitHub's native ARM runner (`ubuntu-22.04-arm`) instead of `cross`; `cargo-deny` enforces the rustls-only rule; the chrono, chrono-tz and humantime "unmaintained" advisories are ignored until core moves off them | Native builds are simpler and also run the tests on aarch64; 22.04's glibc 2.35 keeps the binary runnable on Raspberry Pi OS bookworm |
 | 2026-11-24 | Phase 1 fills gaps: `agent.implement_prompt`/`revise_prompt` override options; omitted daily times inside a present section disable the job; `poll_interval` must divide 24 h; `agent-ready` + `agent-blocked` counts as queued; host-observed GitHub rate limits classify as `network` | The spec named these behaviors without fixing the details; these are the conservative readings |
 | 2026-11-24 | Nightly image update in v1 (7.1), Claude Code from the signed apt repo | Keeps Claude Code current without changing it under a running job; a bad release is caught by the smoke test and the previous image stays one command away |

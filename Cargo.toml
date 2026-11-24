@@ -18,10 +18,9 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1.0.105"
-chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
-chrono-tz = "0.10.4"
 globset = "0.4.22"
-humantime = "2.4.0"
+# No system tz lookups: the tz database is bundled, so singlelane-core never reads the filesystem.
+jiff = { version = "1.0.2", default-features = false, features = ["std", "tz-fat", "tzdb-bundle-always", "perf-inline"] }
 regex = "1.13.2"
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
