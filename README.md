@@ -46,7 +46,7 @@ are reported to Telegram. `/status`, `/pause` and `/resume` work from your phone
 
 ## Building the agent image
 
-The agent image holds Claude Code, `agent-runner` (the container entrypoint), JDK 21, Node 22
+The agent image holds Claude Code, `agent-runner` (the container entrypoint), JDK 21, Node 26
 and headless Chromium behind the Playwright MCP server. The Dockerfile is
 [`image/Dockerfile`](image/Dockerfile) and the build context is the repository root. It needs
 Docker with BuildKit (the default since Docker 23). Nothing here needs `make`.

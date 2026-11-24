@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# singlelane agent image (SPEC 7): Claude Code, agent-runner, JDK 21, Node 22, and headless
+# singlelane agent image (SPEC 7): Claude Code, agent-runner, JDK 21, Node 26, and headless
 # Chromium behind the Playwright MCP server. One container of this image runs one job.
 #
 # The build context is the repository root:
@@ -11,7 +11,7 @@
 # Code step: everything after CLAUDE_CACHE_BUST is rebuilt every night.
 
 ARG RUST_IMAGE=rust:1-bookworm
-ARG NODE_IMAGE=node:22-bookworm-slim
+ARG NODE_IMAGE=node:26-bookworm-slim
 ARG BASE_IMAGE=eclipse-temurin:21-jdk-noble
 
 # ---- agent-runner ---------------------------------------------------------------------------
@@ -28,8 +28,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
  && cp target/release/agent-runner /usr/local/bin/agent-runner \
  && /usr/local/bin/agent-runner --version
 
-# ---- Node 22 --------------------------------------------------------------------------------
+# ---- Node 26 (LTS) --------------------------------------------------------------------------
 # From the official image instead of a third-party apt repository set up with `curl | bash`.
+# Node no longer bundles corepack (since 25): a project that uses yarn or pnpm installs it in
+# the toolchains step below, for example `npm install --global pnpm@<version>`.
 FROM ${NODE_IMAGE} AS node
 
 # ---- runtime --------------------------------------------------------------------------------
@@ -47,7 +49,6 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
- && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
  && node --version \
  && npm --version
 
@@ -136,7 +137,7 @@ ARG SINGLELANE_VERSION=unknown
 ARG BUILD_DATE=unknown
 ARG CLAUDE_CODE_VERSION=unknown
 LABEL org.opencontainers.image.title="singlelane-agent" \
-      org.opencontainers.image.description="Agent image for singlelane: Claude Code, agent-runner, JDK 21, Node 22, headless Chromium" \
+      org.opencontainers.image.description="Agent image for singlelane: Claude Code, agent-runner, JDK 21, Node 26, headless Chromium" \
       org.opencontainers.image.source="https://github.com/ichanzhar/singlelane" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0" \
       org.opencontainers.image.version="${SINGLELANE_VERSION}" \
