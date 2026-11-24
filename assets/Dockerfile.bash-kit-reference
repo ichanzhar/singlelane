@@ -1,0 +1,30 @@
+# Agent image - arm64 (Raspberry Pi 5). Add your project toolchains here.
+FROM eclipse-temurin:21-jdk-noble
+
+ARG NODE_MAJOR=22
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git curl ca-certificates jq ripgrep unzip procps \
+ && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# Non-root user with uid 1000 so files in the mounted repo match the host 'singlelane' user.
+RUN userdel -r ubuntu 2>/dev/null || true \
+ && useradd -m -u 1000 -s /bin/bash agent \
+ && mkdir -p /work /home/agent/.gradle /home/agent/.npm /home/agent/.claude/agents \
+ && chown -R agent:agent /work /home/agent
+
+USER agent
+ENV PATH=/home/agent/.local/bin:$PATH \
+    DISABLE_AUTOUPDATER=1 \
+    GRADLE_OPTS="-Dorg.gradle.daemon=false -Xmx2g"
+
+# Claude Code native installer (detects arm64)
+RUN curl -fsSL https://claude.ai/install.sh | bash && claude --version
+
+COPY --chown=agent:agent agents/ /home/agent/.claude/agents/
+COPY --chown=agent:agent settings.json /home/agent/.claude/settings.json
+COPY --chown=agent:agent --chmod=755 entrypoint.sh /home/agent/entrypoint.sh
+
+WORKDIR /work
+ENTRYPOINT ["/home/agent/entrypoint.sh"]

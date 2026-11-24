@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git remote:*)",
+      "Bash(curl * | bash*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(.github/workflows/**)",
+      "Edit(**/CODEOWNERS)"
+    ]
+  }
+}
